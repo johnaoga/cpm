@@ -1,0 +1,13 @@
+{
+  "paper_id": "paper_id",
+  "title": "title",
+  "author_names": ["f_name", "s_name", "t_name"],
+  "author_affiliations": ["f_affiliation", "s_affiliation", "t_affiliation"],
+  "author_departments": ["f_department", "s_department", "t_department"],
+  "author_emails": ["f_email", "s_email", "t_email"],
+  "corr_email": "corr_email",
+  "pref_columns": ["pref_one", "pref_two"],
+  "comment": "comments",
+  "separator": ";",
+  "encoding": "latin-1"
+}

@@ -1,0 +1,6 @@
+resource
+venv
+data/paper-title and prefs.csv
+data/topics.csv
+output/*
+__pycache__
