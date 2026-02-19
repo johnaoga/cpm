@@ -10,7 +10,17 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+Example data files are provided in `data/example_papers.csv` (10 papers) and `data/example_topics.csv` (5 topics).
+
 ```bash
+# Try with example data (10 papers, 5 topics)
+python main.py generate --config config/schedule_config.json \
+    --mapping config/column_mapping.json \
+    --papers data/example_papers.csv --topics data/example_topics.csv \
+    --format md
+
+# Or step-by-step with your own data:
+
 # 1. Generate a skeleton programme from schedule config
 python main.py dummy --config config/schedule_config.json --output output/dummy_program.json
 

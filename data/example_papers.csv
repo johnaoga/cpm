@@ -1,0 +1,11 @@
+paper_id;title;f_name;f_affiliation;f_department;f_email;s_name;s_affiliation;s_department;s_email;t_name;t_affiliation;t_department;t_email;corr_email;pref_one;pref_two;comments
+101;Deep Learning for Control Systems;Alice Smith;MIT;EECS;alice@mit.edu;Bob Jones;Stanford;CS;bob@stanford.edu;NULL;NULL;NULL;NULL;alice@mit.edu;1;3;
+102;Robust MPC for Autonomous Vehicles;Carol White;ETH Zurich;D-MAVT;carol@ethz.ch;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;carol@ethz.ch;2;1;prefer morning session
+103;Neural Network Verification Methods;David Brown;Oxford;CS;david@ox.ac.uk;Eve Green;Cambridge;Engineering;eve@cam.ac.uk;NULL;NULL;NULL;NULL;david@ox.ac.uk;3;2;
+104;Reinforcement Learning in Robotics;Frank Miller;Berkeley;EECS;frank@berkeley.edu;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;frank@berkeley.edu;1;4;
+105;Stability Analysis of Hybrid Systems;Grace Lee;TU Munich;EE;grace@tum.de;Henry Wilson;KTH;EE;henry@kth.se;NULL;NULL;NULL;NULL;grace@tum.de;4;3;day 2 preferred
+106;Optimal Control with Constraints;Ivy Chen;Caltech;CMS;ivy@caltech.edu;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;ivy@caltech.edu;2;4;
+107;Event-Triggered Control Strategies;Jack Davis;TU Delft;3mE;jack@tudelft.nl;Kate Adams;EPFL;STI;kate@epfl.ch;NULL;NULL;NULL;NULL;jack@tudelft.nl;5;1;
+108;Data-Driven Model Predictive Control;Leo Martin;Imperial;EEE;leo@imperial.ac.uk;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;leo@imperial.ac.uk;2;5;
+109;Distributed Optimization Algorithms;Mia Taylor;CMU;ECE;mia@cmu.edu;Noah Clark;Georgia Tech;ECE;noah@gatech.edu;NULL;NULL;NULL;NULL;mia@cmu.edu;5;2;
+110;Safe Learning for Autonomous Systems;Olivia Harris;Princeton;MAE;olivia@princeton.edu;NULL;NULL;NULL;NULL;NULL;NULL;NULL;NULL;olivia@princeton.edu;1;5;must be day 1

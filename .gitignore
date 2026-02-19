@@ -2,5 +2,6 @@ resource
 venv
 data/paper-title and prefs.csv
 data/topics.csv
+!data/example_*.csv
 output/*
 __pycache__
