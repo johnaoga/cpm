@@ -21,6 +21,7 @@ class ConstraintOp(str, Enum):
     IN = "in"       # room_name in {day_4, day_5}
     NEQ = "!="      # paper_id != day_1
     NOT_IN = "not_in"
+    LT = "<"        # paper_1 < paper_2  (precedence)
 
 
 class SlotKind(str, Enum):
@@ -29,7 +30,7 @@ class SlotKind(str, Enum):
     BREAK = "break"
     LUNCH = "lunch"
     DINNER = "dinner"
-    PRELIMINARY = "preliminary"
+    PLENARY = "plenary"
     ROOM_CHANGE = "room_change"
 
 
@@ -62,6 +63,10 @@ class Room:
 class Chair:
     chair_id: int
     name: str
+    email: str = ""
+    arrival_day: int = 1      # first day they are present
+    departure_day: int = 999  # last day they are present
+    topic_ids: list[int] = field(default_factory=list)  # inferred from papers
 
 
 @dataclass
@@ -100,7 +105,7 @@ class Constraint:
     # ------------------------------------------------------------------
     _PATTERN = re.compile(
         r"^\s*(?P<subj>\w+)"
-        r"\s+(?P<op>=|!=|in|not_in)\s+"
+        r"\s+(?P<op>=|!=|<|in|not_in)\s+"
         r"(?P<val>.+?)\s*$",
         re.IGNORECASE,
     )
@@ -223,11 +228,14 @@ class Program:
         return _program_from_dict(d)
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False))
+        Path(path).write_text(
+            json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "Program":
-        return cls.from_dict(json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +345,11 @@ def _session_from_dict(d: dict) -> Session:
     room_raw = d.get("room")
     room = Room(**room_raw) if room_raw else None
     chair_raw = d.get("chair")
-    chair = Chair(**chair_raw) if chair_raw else None
+    if chair_raw:
+        _chair_fields = {f for f in Chair.__dataclass_fields__}
+        chair = Chair(**{k: v for k, v in chair_raw.items() if k in _chair_fields})
+    else:
+        chair = None
     papers = []
     for p in d.get("papers", []):
         authors = [Author(**a) for a in p.get("authors", [])]

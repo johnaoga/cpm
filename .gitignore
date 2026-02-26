@@ -1,4 +1,8 @@
-resource
-venv
-__pycache__
-examples/benelux
+__pycache__/
+*.pyc
+venv/
+resource/
+examples/benelux/
+examples/*/output/
+output/
+.DS_Store

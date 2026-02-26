@@ -208,20 +208,54 @@ def _paper_topic_score(
     topic_id: int,
     topic_groups: dict[int, list[int]],
     sbert_scores: Optional[dict[int, dict[int, float]]] = None,
+    topic_sim_matrix: Optional[np.ndarray] = None,
+    tid_list: Optional[list[int]] = None,
 ) -> int:
     """Integer score (higher = better) for placing *paper* in a session
-    with canonical topic *topic_id*."""
+    with canonical topic *topic_id*.
+
+    Scoring priority:
+      1. Direct preference match  → 100 (pref1) / 60 (pref2)
+      2. SBERT paper-topic score  → 0–100
+      3. Topic similarity fallback → 0–40 (scaled from topic-topic sim
+         between session topic and paper's preferred topics)
+      4. Baseline                  → 1
+    """
     member_tids = topic_groups.get(topic_id, [topic_id])
 
+    # Direct SBERT paper-topic score
     if sbert_scores and paper.paper_id in sbert_scores:
         pscores = sbert_scores[paper.paper_id]
         best = max((pscores.get(tid, 0.0) for tid in member_tids), default=0.0)
         return int(best * 100)
 
+    # Direct preference match
     for rank, weight in enumerate([100, 60]):
         if rank < len(paper.pref_ids):
             if paper.pref_ids[rank] in member_tids:
                 return weight
+
+    # Topic-topic similarity fallback: how similar is the session's topic
+    # to the paper's preferred topics? This helps place papers whose
+    # preferred sessions are full into a related session.
+    if topic_sim_matrix is not None and tid_list and paper.pref_ids:
+        tid_index = {t: i for i, t in enumerate(tid_list)}
+        best_sim = 0.0
+        for pref_tid in paper.pref_ids:
+            if pref_tid not in tid_index:
+                continue
+            pi = tid_index[pref_tid]
+            for mtid in member_tids:
+                if mtid not in tid_index:
+                    continue
+                mi = tid_index[mtid]
+                sim = float(topic_sim_matrix[pi, mi])
+                if sim > best_sim:
+                    best_sim = sim
+        if best_sim > 0.0:
+            # Scale to 1–40 range (below direct pref but above baseline)
+            return max(1, int(best_sim * 40))
+
     return 1  # small baseline so every paper can go somewhere
 
 
@@ -234,17 +268,38 @@ def _parse_constraints(
     papers: list[Paper],
     sessions: list[Session],
 ) -> dict:
-    """Extract solver-relevant constraints into lookup dicts."""
+    """Extract solver-relevant constraints into lookup dicts.
+
+    Returns dict with keys:
+      paper_day, paper_session, paper_not_day, session_labels,
+      paper_same_session (list of (pidA, pidB) pairs),
+      paper_precedence   (list of (pidA, pidB) meaning A before B in session).
+    """
     paper_day: dict[int, list[int]] = {}
     paper_session: dict[int, list[str]] = {}
     paper_not_day: dict[int, list[int]] = {}
     session_labels: dict[str, str] = {}
+    paper_same_session: list[tuple[int, int]] = []
+    paper_precedence: list[tuple[int, int]] = []
 
     for c in constraints:
         if c.subject_type == "paper":
             pid = int(c.subject_id) if c.subject_id.isdigit() else 0
             if not pid:
                 continue
+
+            # Check if value references another paper (paper_X = paper_Y)
+            if c.value and c.value[0].startswith("paper_"):
+                try:
+                    other_pid = int(c.value[0].split("_", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                if c.op == ConstraintOp.EQ:
+                    paper_same_session.append((pid, other_pid))
+                elif c.op == ConstraintOp.LT:
+                    paper_precedence.append((pid, other_pid))
+                continue
+
             days = []
             sess_ids = []
             for v in c.value:
@@ -273,12 +328,24 @@ def _parse_constraints(
         "paper_session": paper_session,
         "paper_not_day": paper_not_day,
         "session_labels": session_labels,
+        "paper_same_session": paper_same_session,
+        "paper_precedence": paper_precedence,
     }
 
 
 # ---------------------------------------------------------------------------
 # Phase 1: Topic → Session assignment (greedy)
 # ---------------------------------------------------------------------------
+
+def _build_slot_groups(sessions: list[Session]) -> dict[tuple[int, str], list[int]]:
+    """Group session indices by (day, start_time) — i.e. parallel sessions."""
+    groups: dict[tuple[int, str], list[int]] = defaultdict(list)
+    for j, sess in enumerate(sessions):
+        if sess.time_slot:
+            key = (sess.day, sess.time_slot.start)
+            groups[key].append(j)
+    return dict(groups)
+
 
 def _assign_topics_to_sessions(
     sessions: list[Session],
@@ -287,8 +354,13 @@ def _assign_topics_to_sessions(
     topic_groups: dict[int, list[int]],
     caps: list[int],
     sbert_scores: Optional[dict[int, dict[int, float]]] = None,
+    topic_diversity: bool = True,
 ) -> dict[int, int]:
     """Greedily assign a canonical topic to each non-fixed session.
+
+    When *topic_diversity* is True (default), the algorithm:
+    - Avoids placing the same topic in parallel sessions of the same slot.
+    - Spreads a topic's sessions across different days.
 
     Returns {session_index: canonical_topic_id}.
     """
@@ -313,20 +385,55 @@ def _assign_topics_to_sessions(
         if sess.is_fixed:
             used_sessions.add(j)
 
-    # Assign topics round-robin: largest topic first, fill sessions
+    # Build parallel-slot groups for diversity scoring
+    slot_groups = _build_slot_groups(sessions)
+    # Inverse: session index → slot key
+    sess_slot: dict[int, tuple[int, str]] = {}
+    for key, indices in slot_groups.items():
+        for j in indices:
+            sess_slot[j] = key
+
+    # Track topic placement per slot and per day for diversity
+    slot_topic_count: dict[tuple[int, str], dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    day_topic_count: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+
+    def _diversity_penalty(j: int, ctid: int) -> float:
+        """Higher penalty → less desirable. 0 = no conflict."""
+        if not topic_diversity:
+            return 0.0
+        penalty = 0.0
+        sk = sess_slot.get(j)
+        if sk:
+            # Penalise same topic already in this parallel slot
+            same_in_slot = slot_topic_count[sk].get(ctid, 0)
+            penalty += same_in_slot * 1000
+        # Mild penalty for day concentration (prefer spreading across days)
+        day = sessions[j].day
+        same_in_day = day_topic_count[day].get(ctid, 0)
+        penalty += same_in_day * 10
+        return penalty
+
+    def _record_assignment(j: int, ctid: int) -> None:
+        sk = sess_slot.get(j)
+        if sk:
+            slot_topic_count[sk][ctid] += 1
+        day_topic_count[sessions[j].day][ctid] += 1
+
+    # Assign topics: largest topic first, pick session with best
+    # (capacity - diversity_penalty) score
     for ctid, count in sorted_topics:
         if count == 0:
             continue
         remaining = count
         while remaining > 0:
-            # Find best available session (prefer larger capacity)
             best_j = -1
-            best_cap = 0
+            best_score = -float("inf")
             for j in range(len(sessions)):
                 if j in used_sessions:
                     continue
-                if caps[j] > best_cap:
-                    best_cap = caps[j]
+                score = caps[j] - _diversity_penalty(j, ctid)
+                if score > best_score:
+                    best_score = score
                     best_j = j
             if best_j < 0:
                 logger.warning(
@@ -336,9 +443,11 @@ def _assign_topics_to_sessions(
                 break
             sess_topic[best_j] = ctid
             used_sessions.add(best_j)
-            remaining -= best_cap
+            _record_assignment(best_j, ctid)
+            remaining -= caps[best_j]
 
-    # Assign remaining unused sessions a topic (the one with most overflow)
+    # Assign remaining unused sessions a topic (the one with most overflow,
+    # still respecting diversity)
     overflow = {
         ctid: topic_paper_count.get(ctid, 0) - sum(
             caps[j] for j, t in sess_topic.items() if t == ctid
@@ -348,10 +457,19 @@ def _assign_topics_to_sessions(
     for j in range(len(sessions)):
         if j in used_sessions:
             continue
-        # Pick topic with largest overflow
-        if overflow:
-            best_tid = max(overflow, key=lambda t: overflow[t])
+        if not overflow:
+            break
+        # Pick topic with largest overflow, but penalise duplicates in this slot
+        best_tid = None
+        best_val = -float("inf")
+        for ctid, ovf in overflow.items():
+            val = ovf - _diversity_penalty(j, ctid)
+            if val > best_val:
+                best_val = val
+                best_tid = ctid
+        if best_tid is not None:
             sess_topic[j] = best_tid
+            _record_assignment(j, best_tid)
             overflow[best_tid] -= caps[j]
             used_sessions.add(j)
 
@@ -401,8 +519,10 @@ def assign_papers(
     )
 
     # ── Phase 1: topic → session ──
+    diversity = cfg.extra.get("topic_diversity", True)
     sess_topic_map = _assign_topics_to_sessions(
         sessions, papers, topics, topic_groups, caps, sbert_scores,
+        topic_diversity=diversity,
     )
 
     for j, ctid in sess_topic_map.items():
@@ -464,9 +584,29 @@ def assign_papers(
             if sess.session_id not in allowed_sids:
                 model.add(x[i][j] == 0)
 
+    # Paper-paper same-session constraints: paper_A = paper_B
+    for pid_a, pid_b in parsed["paper_same_session"]:
+        if pid_a not in paper_idx or pid_b not in paper_idx:
+            logger.warning("Same-session constraint references unknown paper: %d or %d", pid_a, pid_b)
+            continue
+        ia, ib = paper_idx[pid_a], paper_idx[pid_b]
+        for j in range(n_sessions):
+            model.add(x[ia][j] == x[ib][j])
+
+    # Paper-paper precedence constraints: paper_A < paper_B
+    # At CP-SAT level this means same-session; ordering is applied post-solve.
+    for pid_a, pid_b in parsed["paper_precedence"]:
+        if pid_a not in paper_idx or pid_b not in paper_idx:
+            logger.warning("Precedence constraint references unknown paper: %d or %d", pid_a, pid_b)
+            continue
+        ia, ib = paper_idx[pid_a], paper_idx[pid_b]
+        for j in range(n_sessions):
+            model.add(x[ia][j] == x[ib][j])
+
     # Objective: maximise paper-topic affinity + bonus for assigning papers
     ASSIGN_BONUS = 200  # strong incentive to assign every paper
     obj_terms = []
+    tid_list = [t.topic_id for t in topics]
 
     for i, paper in enumerate(papers):
         # Bonus for being assigned at all
@@ -482,6 +622,8 @@ def assign_papers(
                 continue
             score = _paper_topic_score(
                 paper, ctid, topic_groups, sbert_scores,
+                topic_sim_matrix=topic_sim_matrix,
+                tid_list=tid_list,
             )
             if score > 0:
                 obj_terms.append(score * x[i][j])
@@ -504,6 +646,31 @@ def assign_papers(
                 sessions[j].papers.append(papers[i])
                 assigned_count += 1
                 break
+
+    # Apply precedence ordering: paper_A < paper_B → A before B in session
+    precedence_pairs = parsed["paper_precedence"]
+    if precedence_pairs:
+        for sess in sessions:
+            if len(sess.papers) < 2:
+                continue
+            # Build a precedence graph for papers in this session
+            pids_in_sess = {p.paper_id for p in sess.papers}
+            relevant = [
+                (a, b) for a, b in precedence_pairs
+                if a in pids_in_sess and b in pids_in_sess
+            ]
+            if not relevant:
+                continue
+            # Topological-ish sort: repeatedly move items that must come first
+            paper_list = list(sess.papers)
+            pid_pos = {p.paper_id: idx for idx, p in enumerate(paper_list)}
+            for pid_a, pid_b in relevant:
+                pos_a, pos_b = pid_pos[pid_a], pid_pos[pid_b]
+                if pos_a > pos_b:
+                    # Swap to fix ordering
+                    paper_list[pos_a], paper_list[pos_b] = paper_list[pos_b], paper_list[pos_a]
+                    pid_pos[pid_a], pid_pos[pid_b] = pos_b, pos_a
+            sess.papers = paper_list
 
     logger.info(
         "Phase 2 done: status=%s, objective=%.1f, %d/%d papers assigned",

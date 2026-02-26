@@ -15,7 +15,6 @@ Subcommands
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -52,7 +51,6 @@ def _ensure_dir(path: str):
 
 def cmd_dummy(args):
     """Generate a dummy (skeleton) programme."""
-    from cpm.config import ScheduleConfig
     from cpm.dummy_program import generate_dummy_program
 
     cfg = _load_config(args.config)
@@ -64,7 +62,6 @@ def cmd_dummy(args):
 
 def cmd_constraints(args):
     """Manage constraints in the schedule config."""
-    from cpm.config import ScheduleConfig
     from cpm.data_prep import load_constraint_lines
 
     cfg = _load_config(args.config)
@@ -106,8 +103,70 @@ def cmd_constraints(args):
         else:
             print(f"  Constraint {args.cid} not found.", file=sys.stderr)
 
+    elif args.action == "review":
+        if not args.mapping or not args.papers:
+            print("Provide --mapping and --papers for review.", file=sys.stderr)
+            return
+        _review_papers_interactive(args, cfg)
+
     cfg.save(args.config)
     logger.info("Config updated: %s", args.config)
+
+
+def _review_papers_interactive(args, cfg):
+    """Interactively review each paper's comment and add constraints."""
+    from cpm.data_prep import load_papers, load_topics
+
+    mapping = _load_mapping(args.mapping)
+    papers = load_papers(args.papers, mapping)
+
+    topics = []
+    if args.topics:
+        topics = load_topics(args.topics)
+    tid_to_name = {t.topic_id: t.name for t in topics}
+
+    # Filter to papers with non-empty comments (most useful for review)
+    review_papers = [p for p in papers if p.comment.strip()]
+    if not review_papers:
+        review_papers = papers
+
+    print(f"\n── Interactive Paper Review ({len(review_papers)} papers) ──")
+    print("For each paper: enter a constraint (e.g. 'paper_42 = day_1'),")
+    print("'s' to skip, or 'q' to quit.\n")
+
+    added = 0
+    for p in review_papers:
+        pref_str = ", ".join(
+            f"{pid} ({tid_to_name.get(pid, '?')})" for pid in p.pref_ids
+        )
+        print(f"── Paper {p.paper_id}: {p.title}")
+        print(f"   Authors: {', '.join(a.name for a in p.authors)}")
+        print(f"   Prefs:   {pref_str or '(none)'}")
+        if p.comment.strip():
+            print(f"   Comment: {p.comment.strip()}")
+        print()
+
+        while True:
+            try:
+                answer = input("   Constraint (or s/q): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n   Quit.")
+                return
+            if not answer or answer.lower() == "s":
+                break
+            if answer.lower() == "q":
+                print(f"   Done. Added {added} constraints.")
+                return
+            try:
+                c = cfg.add_constraint(answer)
+                print(f"   ✓ Added [{c.cid}]  {c.to_text()}")
+                added += 1
+            except ValueError as e:
+                print(f"   ✗ {e}  — try again or 's' to skip.")
+                continue
+            break
+
+    print(f"\n   Review complete. Added {added} constraints total.")
 
 
 def _capacity_gate(prog, n_papers, cfg, force: bool = False) -> bool:
@@ -141,8 +200,6 @@ def _capacity_gate(prog, n_papers, cfg, force: bool = False) -> bool:
 
 def cmd_papers(args):
     """Assign papers to sessions."""
-    import numpy as np
-
     from cpm.assign_papers import assign_papers
     from cpm.data_prep import load_papers, load_topics
     from cpm.similarity import load_paper_topic_scores, load_topic_similarity_matrix
@@ -179,7 +236,7 @@ def cmd_papers(args):
 def cmd_rooms(args):
     """Assign rooms to sessions."""
     from cpm.assign_rooms import assign_rooms
-    from cpm.data_prep import generate_default_rooms, load_rooms
+    from cpm.data_prep import generate_default_rooms, load_papers, load_rooms
 
     cfg = _load_config(args.config)
     prog = _load_program(args.program)
@@ -189,7 +246,13 @@ def cmd_rooms(args):
     else:
         rooms = generate_default_rooms(cfg.num_available_rooms)
 
-    prog = assign_rooms(prog, rooms, cfg)
+    # Load papers for topic-popularity-based room sizing (optional)
+    papers = None
+    if getattr(args, "papers", None) and getattr(args, "mapping", None):
+        mapping = _load_mapping(args.mapping)
+        papers = load_papers(args.papers, mapping)
+
+    prog = assign_rooms(prog, rooms, cfg, papers=papers)
     _ensure_dir(args.output)
     prog.save(args.output)
     logger.info("Rooms assigned → %s", args.output)
@@ -198,7 +261,7 @@ def cmd_rooms(args):
 def cmd_chairs(args):
     """Assign chairs to sessions."""
     from cpm.assign_chairs import assign_chairs
-    from cpm.data_prep import generate_default_chairs, load_chairs
+    from cpm.data_prep import generate_default_chairs, load_chairs, load_papers
 
     cfg = _load_config(args.config)
     prog = _load_program(args.program)
@@ -208,20 +271,42 @@ def cmd_chairs(args):
     else:
         chairs = generate_default_chairs(args.num_chairs)
 
-    prog = assign_chairs(prog, chairs, cfg)
+    # Load papers for topic inference and presenter detection (optional)
+    papers = None
+    if getattr(args, "papers", None) and getattr(args, "mapping", None):
+        mapping = _load_mapping(args.mapping)
+        papers = load_papers(args.papers, mapping)
+
+    prog = assign_chairs(prog, chairs, cfg, papers=papers)
     _ensure_dir(args.output)
     prog.save(args.output)
     logger.info("Chairs assigned → %s", args.output)
 
 
 def cmd_output(args):
-    """Render the programme to Markdown or LaTeX."""
-    from cpm.output import write_program
+    """Render the programme to Markdown, LaTeX, LaTeX folder, or CMS CSV."""
+    from cpm.output import write_cms_csvs, write_program
+    from cpm.output_latex import generate_latex_folder
 
     prog = _load_program(args.program)
-    _ensure_dir(args.output)
-    write_program(prog, args.output, fmt=args.format)
-    logger.info("Programme written to %s (%s)", args.output, args.format)
+
+    if args.format == "latex-folder":
+        latex_cfg = args.latex_config or None
+        out_dir = args.output or "output/latex"
+        generate_latex_folder(prog, out_dir, latex_config=latex_cfg)
+        logger.info("LaTeX folder written to %s", out_dir)
+    elif args.format == "cms-csv":
+        sess_out = args.cms_sessions or "output/cms_sessions.csv"
+        pres_out = args.cms_presentations or "output/cms_presentations.csv"
+        _ensure_dir(sess_out)
+        _ensure_dir(pres_out)
+        dur = args.presentation_duration or 1200
+        write_cms_csvs(prog, sess_out, pres_out, presentation_duration=dur)
+        logger.info("CMS CSVs written to %s, %s", sess_out, pres_out)
+    else:
+        _ensure_dir(args.output)
+        write_program(prog, args.output, fmt=args.format)
+        logger.info("Programme written to %s (%s)", args.output, args.format)
 
 
 def cmd_similarity(args):
@@ -255,12 +340,9 @@ def cmd_similarity(args):
 
 def cmd_generate(args):
     """Full pipeline: dummy → papers → rooms → chairs → output."""
-    import numpy as np
-
     from cpm.assign_chairs import assign_chairs
     from cpm.assign_papers import assign_papers
     from cpm.assign_rooms import assign_rooms
-    from cpm.config import ScheduleConfig
     from cpm.data_prep import (
         generate_default_chairs,
         generate_default_rooms,
@@ -334,7 +416,7 @@ def cmd_generate(args):
         rooms = load_rooms(args.rooms)
     else:
         rooms = generate_default_rooms(cfg.num_available_rooms)
-    prog = assign_rooms(prog, rooms, cfg)
+    prog = assign_rooms(prog, rooms, cfg, papers=papers)
 
     # Step 5 – assign chairs
     logger.info("Step 5/6: assigning chairs …")
@@ -342,7 +424,7 @@ def cmd_generate(args):
         chairs = load_chairs(args.chairs)
     else:
         chairs = generate_default_chairs(args.num_chairs)
-    prog = assign_chairs(prog, chairs, cfg)
+    prog = assign_chairs(prog, chairs, cfg, papers=papers)
 
     # Step 6 – output
     logger.info("Step 6/6: writing output …")
@@ -351,10 +433,25 @@ def cmd_generate(args):
     prog.save(prog_out)
 
     fmt = args.format or "md"
-    render_out = str(Path(prog_out).with_suffix(f".{fmt}"))
-    write_program(prog, render_out, fmt=fmt)
 
-    logger.info("Done. Programme → %s, Rendered → %s", prog_out, render_out)
+    if fmt == "latex-folder":
+        from cpm.output_latex import generate_latex_folder
+        latex_dir = str(Path(prog_out).parent / "latex")
+        latex_cfg = getattr(args, "latex_config", None)
+        generate_latex_folder(prog, latex_dir, latex_config=latex_cfg)
+        logger.info("Done. Programme → %s, LaTeX folder → %s", prog_out, latex_dir)
+    elif fmt == "cms-csv":
+        from cpm.output import write_cms_csvs
+        base = Path(prog_out).parent
+        sess_out = str(base / "cms_sessions.csv")
+        pres_out = str(base / "cms_presentations.csv")
+        dur = cfg.presentation_duration_min * 60
+        write_cms_csvs(prog, sess_out, pres_out, presentation_duration=dur)
+        logger.info("Done. Programme → %s, CMS CSVs → %s, %s", prog_out, sess_out, pres_out)
+    else:
+        render_out = str(Path(prog_out).with_suffix(f".{fmt}"))
+        write_program(prog, render_out, fmt=fmt)
+        logger.info("Done. Programme → %s, Rendered → %s", prog_out, render_out)
 
 
 # ── argument parser ──────────────────────────────────────────────────────
@@ -375,10 +472,13 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- constraints ----
     sp = sub.add_parser("constraints", help="Manage constraints")
     sp.add_argument("--config", required=True, help="Schedule config JSON")
-    sp.add_argument("action", choices=["list", "add", "edit", "delete"])
+    sp.add_argument("action", choices=["list", "add", "edit", "delete", "review"])
     sp.add_argument("--text", help="Constraint text (for add/edit)")
     sp.add_argument("--cid", help="Constraint ID (for edit/delete)")
     sp.add_argument("--file", help="Text file with constraints (for add)")
+    sp.add_argument("--mapping", help="Column-mapping JSON (for review)")
+    sp.add_argument("--papers", help="Paper CSV (for review)")
+    sp.add_argument("--topics", help="Topics CSV (for review, optional)")
     sp.set_defaults(func=cmd_constraints)
 
     # ---- papers ----
@@ -402,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--config", required=True)
     sp.add_argument("--program", required=True, help="Input programme JSON")
     sp.add_argument("--rooms", help="Rooms CSV (optional, generates defaults)")
+    sp.add_argument("--mapping", help="Column-mapping JSON (for popularity-based sizing)")
+    sp.add_argument("--papers", help="Paper CSV (for popularity-based sizing)")
     sp.add_argument("--output", default="output/program_rooms.json")
     sp.set_defaults(func=cmd_rooms)
 
@@ -411,14 +513,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--program", required=True, help="Input programme JSON")
     sp.add_argument("--chairs", help="Chairs CSV (optional, generates defaults)")
     sp.add_argument("--num-chairs", type=int, default=10)
+    sp.add_argument("--mapping", help="Column-mapping JSON (for presenter detection)")
+    sp.add_argument("--papers", help="Paper CSV (for presenter detection)")
     sp.add_argument("--output", default="output/program_chairs.json")
     sp.set_defaults(func=cmd_chairs)
 
     # ---- output ----
-    sp = sub.add_parser("output", help="Render programme to md/latex")
+    sp = sub.add_parser("output", help="Render programme to md/latex/latex-folder/cms-csv")
     sp.add_argument("--program", required=True)
-    sp.add_argument("--format", choices=["md", "latex"], default="md")
-    sp.add_argument("--output", default="output/program.md")
+    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "cms-csv"],
+                    default="md")
+    sp.add_argument("--output", default="output/program.md",
+                    help="Output file (md/latex) or directory (latex-folder)")
+    sp.add_argument("--latex-config", help="LaTeX config JSON (for latex-folder)")
+    sp.add_argument("--cms-sessions", help="Output path for CMS sessions CSV")
+    sp.add_argument("--cms-presentations", help="Output path for CMS presentations CSV")
+    sp.add_argument("--presentation-duration", type=int, default=1200,
+                    help="Presentation duration in seconds for CMS CSV (default: 1200)")
     sp.set_defaults(func=cmd_output)
 
     # ---- similarity ----
@@ -444,7 +555,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--chairs", help="Chairs CSV (optional)")
     sp.add_argument("--num-chairs", type=int, default=10)
     sp.add_argument("--output", default="output/program.json")
-    sp.add_argument("--format", choices=["md", "latex"], default="md")
+    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "cms-csv"],
+                    default="md")
+    sp.add_argument("--latex-config", help="LaTeX config JSON (for latex-folder)")
     sp.add_argument("--use-sbert", action="store_true")
     sp.add_argument("--model", default="all-MiniLM-L6-v2")
     sp.add_argument("--sbert-scores", help="Pre-computed SBERT scores JSON")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,81 @@ from typing import Any
 import pandas as pd
 
 from .models import Author, Chair, ColumnMapping, Paper, Room, Topic
+
+logger = logging.getLogger(__name__)
+
+
+def _fix_mojibake(text: str) -> str:
+    """Repair mojibake caused by mixed encoding (UTF-8 bytes in a latin-1 file).
+
+    Tries to re-encode the string back to bytes (via cp1252 then latin-1) and
+    decode as UTF-8.  This handles files where some entries were pasted as
+    UTF-8 while the rest is latin-1 / cp1252.
+    """
+    if not text or all(ord(c) < 128 for c in text):
+        return text
+    # Try whole-string repair: cp1252 first (handles \x80-\x9F → Unicode),
+    # then latin-1 as fallback.
+    for enc in ("cp1252", "latin-1"):
+        try:
+            return text.encode(enc).decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+    # Per-character repair: split into runs of encodable chars, attempt
+    # re-decode of each run that contains non-ASCII.
+    result: list[str] = []
+    buf: list[str] = []
+
+    def _flush() -> None:
+        if not buf:
+            return
+        chunk = "".join(buf)
+        buf.clear()
+        if all(ord(c) < 128 for c in chunk):
+            result.append(chunk)
+            return
+        for enc in ("cp1252", "latin-1"):
+            try:
+                result.append(chunk.encode(enc).decode("utf-8"))
+                return
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                continue
+        result.append(chunk)
+
+    for ch in text:
+        try:
+            ch.encode("cp1252")
+            buf.append(ch)
+        except UnicodeEncodeError:
+            _flush()
+            result.append(ch)
+
+    _flush()
+    return "".join(result)
+
+
+def _detect_encoding(path: str | Path, configured: str = "utf-8") -> str:
+    """Try UTF-8 first, then *configured*, then latin-1.
+
+    Returns the first encoding that reads the file without error.
+    This prevents mojibake when the configured encoding is wrong.
+    """
+    raw = Path(path).read_bytes()
+    # Strip BOM if present
+    if raw[:3] == b'\xef\xbb\xbf':
+        return "utf-8-sig"
+    for enc in dict.fromkeys(["utf-8", configured, "latin-1"]):
+        try:
+            raw.decode(enc)
+            if enc != configured:
+                logger.info(
+                    "Encoding auto-detected as %s (configured: %s) for %s",
+                    enc, configured, path,
+                )
+            return enc
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return configured  # last resort
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +140,11 @@ def _resolve_all(mapping: ColumnMapping, columns: list[str]) -> dict[str, list[s
 
 def load_papers(csv_path: str | Path, mapping: ColumnMapping) -> list[Paper]:
     """Load papers from a CSV file using the given column mapping."""
+    enc = _detect_encoding(csv_path, mapping.encoding)
     df = pd.read_csv(
         csv_path,
         sep=mapping.separator,
-        encoding=mapping.encoding,
+        encoding=enc,
         dtype=str,
         keep_default_na=False,
     )
@@ -99,6 +176,9 @@ def load_papers(csv_path: str | Path, mapping: ColumnMapping) -> list[Paper]:
                 dep = ""
             if eml == "NULL":
                 eml = ""
+            name = _fix_mojibake(name)
+            aff = _fix_mojibake(aff)
+            dep = _fix_mojibake(dep)
             authors.append(Author(name=name, affiliation=aff, department=dep, email=eml))
 
         # Preferences
@@ -123,11 +203,11 @@ def load_papers(csv_path: str | Path, mapping: ColumnMapping) -> list[Paper]:
 
         papers.append(Paper(
             paper_id=pid,
-            title=row.get(mapping.title, ""),
+            title=_fix_mojibake(row.get(mapping.title, "")),
             authors=authors,
             corr_email=row.get(mapping.corr_email, ""),
             pref_ids=prefs,
-            comment=comment_val,
+            comment=_fix_mojibake(comment_val),
         ))
 
     return papers
@@ -168,19 +248,23 @@ def load_rooms(
     capacity_col: str = "capacity",
     sep: str = ";",
 ) -> list[Room]:
-    df = pd.read_csv(csv_path, sep=sep, dtype=str, keep_default_na=False)
+    enc = _detect_encoding(csv_path, "utf-8")
+    df = pd.read_csv(csv_path, sep=sep, dtype=str, keep_default_na=False,
+                      encoding=enc)
     df.columns = [c.strip() for c in df.columns]
+    has_id = id_col in df.columns
     rooms: list[Room] = []
-    for _, row in df.iterrows():
+    for idx, (_, row) in enumerate(df.iterrows(), start=1):
         cap = 0
         if capacity_col in df.columns:
             try:
                 cap = int(row[capacity_col])
             except ValueError:
                 pass
+        rid = int(row[id_col]) if has_id else idx
         rooms.append(Room(
-            room_id=int(row[id_col]),
-            name=row[name_col],
+            room_id=rid,
+            name=_fix_mojibake(row[name_col]),
             capacity=cap,
         ))
     return rooms
@@ -196,16 +280,52 @@ def generate_default_rooms(n: int) -> list[Room]:
 
 def load_chairs(
     csv_path: str | Path,
-    id_col: str = "chair_id",
-    name_col: str = "chair_name",
     sep: str = ";",
 ) -> list[Chair]:
-    df = pd.read_csv(csv_path, sep=sep, dtype=str, keep_default_na=False)
+    """Load chairs from CSV.
+
+    Supports two formats:
+      - Simple: ``chair_id;chair_name``
+      - Extended: ``chair_id;lastname;firstname;email;position;arrival;departure``
+    """
+    enc = _detect_encoding(csv_path, "utf-8")
+    df = pd.read_csv(csv_path, sep=sep, dtype=str, keep_default_na=False,
+                      encoding=enc)
     df.columns = [c.strip() for c in df.columns]
-    return [
-        Chair(chair_id=int(row[id_col]), name=row[name_col])
-        for _, row in df.iterrows()
-    ]
+
+    has_lastname = "lastname" in df.columns
+    has_name = "chair_name" in df.columns
+    has_arrival = "arrival" in df.columns
+    has_departure = "departure" in df.columns
+    has_email = "email" in df.columns
+
+    chairs: list[Chair] = []
+    for idx, (_, row) in enumerate(df.iterrows(), start=1):
+        # ID
+        cid = int(row["chair_id"]) if "chair_id" in df.columns else idx
+
+        # Name
+        if has_lastname:
+            first = _fix_mojibake(row.get("firstname", ""))
+            last = _fix_mojibake(row.get("lastname", ""))
+            name = f"{first} {last}".strip()
+        elif has_name:
+            name = _fix_mojibake(row["chair_name"])
+        else:
+            name = f"Chair {idx}"
+
+        email = row.get("email", "") if has_email else ""
+        arrival = int(row["arrival"]) if has_arrival else 1
+        departure = int(row["departure"]) if has_departure else 999
+
+        chairs.append(Chair(
+            chair_id=cid,
+            name=name,
+            email=email,
+            arrival_day=arrival,
+            departure_day=departure,
+        ))
+    return chairs
 
 
 def generate_default_chairs(n: int) -> list[Chair]:

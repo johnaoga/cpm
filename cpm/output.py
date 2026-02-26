@@ -1,7 +1,9 @@
-"""Output the conference programme in Markdown or LaTeX format."""
+"""Output the conference programme in Markdown, LaTeX, or CMS CSV format."""
 
 from __future__ import annotations
 
+import csv
+import io
 from pathlib import Path
 
 from .models import Program, Session, SlotKind, TimeSlot
@@ -27,7 +29,7 @@ def program_to_markdown(program: Program) -> str:
                 lines.append(f"### {ts.start}–{ts.end}  {ts.label}\n")
                 continue
 
-            if ts.kind == SlotKind.PRELIMINARY:
+            if ts.kind == SlotKind.PLENARY:
                 lines.append(f"### {ts.start}–{ts.end}  {ts.label} *(reserved)*\n")
                 continue
 
@@ -112,7 +114,7 @@ def program_to_latex(program: Program) -> str:
                 lines.append("")
                 continue
 
-            if ts.kind == SlotKind.PRELIMINARY:
+            if ts.kind == SlotKind.PLENARY:
                 lines.append(
                     f"\\subsection*{{{ts.start}--{ts.end} \\quad "
                     f"{_tex_escape(ts.label)} (reserved)}}"
@@ -158,6 +160,96 @@ def program_to_latex(program: Program) -> str:
 
     lines.append(r"\end{document}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Convenience writer
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# CMS CSV output
+# ---------------------------------------------------------------------------
+
+def _time_to_seconds(t: str) -> int:
+    """Convert HH:MM to seconds since midnight."""
+    parts = t.replace(".", ":").split(":")
+    return int(parts[0]) * 3600 + int(parts[1]) * 60
+
+
+def _collect_session_slots(program: Program) -> list[tuple[Session, TimeSlot, int]]:
+    """Collect (session, timeslot, day) triples for all SESSION slots."""
+    result = []
+    for day_prog in program.days:
+        for slot in day_prog.slots:
+            ts: TimeSlot = slot["time_slot"]
+            if ts.kind != SlotKind.SESSION:
+                continue
+            for sess in slot["sessions"]:
+                result.append((sess, ts, day_prog.day))
+    return result
+
+
+def program_to_cms_sessions(program: Program, sep: str = ";") -> str:
+    """Generate a CMS-style sessions CSV.
+
+    Columns: session_id, name, room, topic, chair, day, begin
+    (begin is in seconds since midnight).
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=sep, quoting=csv.QUOTE_ALL)
+    writer.writerow(["session_id", "name", "room", "topic", "chair", "day", "begin"])
+
+    for sess, ts, day in _collect_session_slots(program):
+        sid = sess.session_id
+        name = sid
+        room = sess.room.name if sess.room else ""
+        topic = sess.topic.name if sess.topic else ""
+        chair = sess.chair.name if sess.chair else ""
+        begin = _time_to_seconds(ts.start)
+        writer.writerow([sid, name, room, topic, chair, str(day), str(begin)])
+
+    return buf.getvalue()
+
+
+def program_to_cms_presentations(
+    program: Program, presentation_duration: int = 1200, sep: str = ";"
+) -> str:
+    """Generate a CMS-style presentations CSV.
+
+    Columns: presentation_id, session_id, number, paper_id, duration
+    (duration is in seconds).
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=sep, quoting=csv.QUOTE_ALL)
+    writer.writerow(["presentation_id", "session_id", "number", "paper_id", "duration"])
+
+    pres_id = 1
+    for sess, ts, _day in _collect_session_slots(program):
+        for idx, paper in enumerate(sess.papers, start=1):
+            writer.writerow([
+                str(pres_id), sess.session_id, str(idx),
+                str(paper.paper_id), str(presentation_duration),
+            ])
+            pres_id += 1
+
+    return buf.getvalue()
+
+
+def write_cms_csvs(
+    program: Program,
+    sessions_path: str | Path,
+    presentations_path: str | Path,
+    presentation_duration: int = 1200,
+    sep: str = ";",
+) -> None:
+    """Write both CMS CSV files."""
+    Path(sessions_path).write_text(
+        program_to_cms_sessions(program, sep=sep), encoding="utf-8"
+    )
+    Path(presentations_path).write_text(
+        program_to_cms_presentations(program, presentation_duration, sep=sep),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------

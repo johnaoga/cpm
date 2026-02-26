@@ -11,7 +11,7 @@ from .models import Constraint
 
 
 @dataclass
-class PreliminarySlot:
+class PlenarySlot:
     """A reserved slot in the schedule (e.g. keynote, welcome, closing)."""
     label: str
     day: int
@@ -46,11 +46,16 @@ class ScheduleConfig:
     dinner_included: bool = False
     dinner_start: str = "19:00"
 
+    # --- break/lunch target placement times ("HH:MM", empty = auto) ---
+    morning_break_target: str = "10:30"
+    lunch_target: str = "12:00"
+    afternoon_break_target: str = "15:00"
+
     # --- room-change penalty ---
     room_change_penalty_min: int = 5
 
-    # --- preliminary / reserved slots ---
-    preliminary_slots: list[PreliminarySlot] = field(default_factory=list)
+    # --- plenary / reserved slots ---
+    plenary_slots: list[PlenarySlot] = field(default_factory=list)
 
     # --- constraints (free-form list) ---
     constraints: list[Constraint] = field(default_factory=list)
@@ -97,7 +102,7 @@ class ScheduleConfig:
     def _to_dict(self) -> dict:
         d: dict[str, Any] = {}
         for k, v in self.__dict__.items():
-            if k == "preliminary_slots":
+            if k == "plenary_slots":
                 d[k] = [ps.__dict__ for ps in v]
             elif k == "constraints":
                 d[k] = [c.to_text() for c in v]
@@ -107,7 +112,7 @@ class ScheduleConfig:
 
     @classmethod
     def _from_dict(cls, raw: dict) -> "ScheduleConfig":
-        prelim_raw = raw.pop("preliminary_slots", [])
+        prelim_raw = raw.pop("plenary_slots", [])
         constr_raw = raw.pop("constraints", [])
         extra = raw.pop("extra", {})
 
@@ -117,8 +122,8 @@ class ScheduleConfig:
 
         cfg = cls(**kwargs, extra=extra)
 
-        cfg.preliminary_slots = [
-            PreliminarySlot(**ps) if isinstance(ps, dict) else ps
+        cfg.plenary_slots = [
+            PlenarySlot(**ps) if isinstance(ps, dict) else ps
             for ps in prelim_raw
         ]
         cfg.constraints = []

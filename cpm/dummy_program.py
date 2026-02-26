@@ -1,7 +1,7 @@
 """Generate a skeleton (dummy) programme from a ScheduleConfig.
 
 The dummy programme contains all time-slots (sessions, breaks, lunch, dinner,
-preliminary/reserved slots) but no papers, rooms, or chairs assigned yet.
+plenary/reserved slots) but no papers, rooms, or chairs assigned yet.
 Session IDs are generated so they can be referenced in subsequent constraints.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .config import ScheduleConfig
 from .models import (
-    Constraint,
     DayProgram,
     Program,
     Session,
@@ -27,6 +26,25 @@ def _fmt(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
+def _parse_break_overrides(cfg: ScheduleConfig) -> dict[str, dict[int, int]]:
+    """Extract per-day break/lunch/dinner time overrides from constraints.
+
+    Returns e.g. {"morning_break": {1: 615}, "lunch": {2: 750}, ...}
+    where values are minutes-since-midnight.
+    """
+    overrides: dict[str, dict[int, int]] = {}
+    for kind in ("morning_break", "afternoon_break", "lunch", "dinner"):
+        overrides[kind] = {}
+    for c in cfg.constraints:
+        if c.subject_type in overrides and c.op.value == "=" and c.value:
+            try:
+                day_num = int(c.subject_id)
+                overrides[c.subject_type][day_num] = _minutes(c.value[0])
+            except (ValueError, TypeError):
+                pass
+    return overrides
+
+
 def _build_day_slots(
     cfg: ScheduleConfig,
     day: int,
@@ -40,9 +58,9 @@ def _build_day_slots(
     start = _minutes(cfg.effective_day_start(day))
     end = _minutes(cfg.effective_day_end(day))
 
-    # Collect preliminary slots for this day, sorted by start time
+    # Collect plenary slots for this day, sorted by start time
     prelims = sorted(
-        [ps for ps in cfg.preliminary_slots if ps.day == day],
+        [ps for ps in cfg.plenary_slots if ps.day == day],
         key=lambda ps: _minutes(ps.start),
     )
 
@@ -52,12 +70,15 @@ def _build_day_slots(
         if c.subject_type == "section" and c.op.value == "=" and c.value:
             fixed_labels[c.subject_id] = c.value[0]
 
+    # Per-day break/lunch/dinner time overrides
+    break_overrides = _parse_break_overrides(cfg)
+
     slots: list[dict] = []
     cursor = start
     prelim_idx = 0
 
-    # Place breaks and lunch at conventional clock times.
-    # Find when regular sessions actually begin (after contiguous opening prelims).
+    # Place breaks and lunch at configurable target times.
+    # Find when regular sessions actually begin (after contiguous opening plenaries).
     eff_start = start
     for ps in prelims:
         ps_start = _minutes(ps.start)
@@ -68,28 +89,39 @@ def _build_day_slots(
         else:
             break
 
-    # If effective start is already past 10:30, skip morning break entirely
-    can_morning = cfg.morning_break and eff_start < _minutes("10:30")
-    morning_break_target = _minutes("10:30") if can_morning else end + 1
-    lunch_target = max(_minutes("12:00"), eff_start + 80)
-    afternoon_break_target = max(_minutes("15:00"), lunch_target + cfg.lunch_duration_min + 80)
+    # Apply per-day overrides if present, otherwise use global targets
+    mb_target = break_overrides["morning_break"].get(
+        day, _minutes(cfg.morning_break_target) if cfg.morning_break_target else _minutes("10:30"),
+    )
+    lu_target = break_overrides["lunch"].get(
+        day, _minutes(cfg.lunch_target) if cfg.lunch_target else _minutes("12:00"),
+    )
+    ab_target = break_overrides["afternoon_break"].get(
+        day, _minutes(cfg.afternoon_break_target) if cfg.afternoon_break_target else _minutes("15:00"),
+    )
+
+    # If effective start is already past the morning break target, skip it
+    can_morning = cfg.morning_break and eff_start < mb_target
+    morning_break_target = mb_target if can_morning else end + 1
+    lunch_target = max(lu_target, eff_start + 80)
+    afternoon_break_target = max(ab_target, lunch_target + cfg.lunch_duration_min + 80)
 
     placed_morning_break = not can_morning
     placed_lunch = not cfg.lunch_included
     placed_afternoon_break = not cfg.afternoon_break
 
     while cursor + cfg.presentation_duration_min <= end:
-        # Check if a preliminary slot starts here (or before the next session)
+        # Check if a plenary slot starts here (or before the next session)
         if prelim_idx < len(prelims):
             ps = prelims[prelim_idx]
             ps_start = _minutes(ps.start)
             ps_end = _minutes(ps.end)
             if ps_start <= cursor + cfg.room_change_penalty_min:
-                # Insert the preliminary slot
+                # Insert the plenary slot
                 ts = TimeSlot(
                     start=_fmt(ps_start),
                     end=_fmt(ps_end),
-                    kind=SlotKind.PRELIMINARY,
+                    kind=SlotKind.PLENARY,
                     label=ps.label,
                     day=day,
                 )
@@ -150,7 +182,7 @@ def _build_day_slots(
 
         # Regular session slot
         sess_end = min(cursor + cfg.max_session_duration_min, end)
-        # Don't overshoot into the next preliminary
+        # Don't overshoot into the next plenary
         if prelim_idx < len(prelims):
             ps_start = _minutes(prelims[prelim_idx].start)
             sess_end = min(sess_end, ps_start)
@@ -190,7 +222,7 @@ def _build_day_slots(
 
     # Dinner (after day_end if included)
     if cfg.dinner_included:
-        dinner_start = _minutes(cfg.dinner_start)
+        dinner_start = break_overrides["dinner"].get(day, _minutes(cfg.dinner_start))
         dinner_end = dinner_start + 120  # 2 hours default
         ts = TimeSlot(
             start=_fmt(dinner_start),
