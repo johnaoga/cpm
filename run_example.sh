@@ -118,19 +118,27 @@ $PYTHON main.py output \
   --output "$OUTPUT_DIR/program.md"
 echo ""
 
-# ── Step 6: Output LaTeX folder ──
+# ── Step 6: Output LaTeX folder and mobile version ──
 if [ -f "$LATEX_CFG" ]; then
-  echo "▶ Step 6/7: Generating LaTeX folder …"
+  echo "▶ Step 6/7: Generating LaTeX folder and mobile version …"
   $PYTHON main.py output \
     --program "$OUTPUT_DIR/program_chairs.json" \
     --format latex-folder \
     --latex-config "$LATEX_CFG" \
     --output "$OUTPUT_DIR/latex"
   echo ""
+
+  $PYTHON main.py output \
+    --program "$OUTPUT_DIR/program_chairs.json" \
+    --format mobile \
+    --latex-config "$LATEX_CFG" \
+    --output "$OUTPUT_DIR/program.html"
+  echo ""
 else
   echo "▶ Step 6/7: Skipping LaTeX folder (no $LATEX_CFG found)"
   echo ""
 fi
+
 
 # ── Step 7: Output CMS CSV ──
 echo "▶ Step 7/7: Generating CMS CSV files …"

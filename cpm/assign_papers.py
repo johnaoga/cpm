@@ -23,7 +23,6 @@ from .config import ScheduleConfig
 from .models import (
     Constraint,
     ConstraintOp,
-    DayProgram,
     Paper,
     Program,
     Session,
@@ -278,9 +277,12 @@ def _parse_constraints(
     paper_day: dict[int, list[int]] = {}
     paper_session: dict[int, list[str]] = {}
     paper_not_day: dict[int, list[int]] = {}
+    paper_topic: dict[int, list[int]] = {}  # paper_id -> allowed topic_ids
     session_labels: dict[str, str] = {}
     paper_same_session: list[tuple[int, int]] = []
     paper_precedence: list[tuple[int, int]] = []
+    chair_session: dict[int, list[str]] = {}  # chair_id -> session_ids
+    chair_topic: dict[int, list[int]] = {}    # chair_id -> topic_ids
 
     for c in constraints:
         if c.subject_type == "paper":
@@ -302,10 +304,16 @@ def _parse_constraints(
 
             days = []
             sess_ids = []
+            topic_ids = []
             for v in c.value:
                 if v.startswith("day_"):
                     try:
                         days.append(int(v.split("_")[1]))
+                    except (IndexError, ValueError):
+                        pass
+                elif v.startswith("topic_"):
+                    try:
+                        topic_ids.append(int(v.split("_")[1]))
                     except (IndexError, ValueError):
                         pass
                 elif v.startswith("S"):
@@ -315,9 +323,37 @@ def _parse_constraints(
                     paper_day[pid] = days
                 if sess_ids:
                     paper_session[pid] = sess_ids
+                if topic_ids:
+                    paper_topic.setdefault(pid, []).extend(topic_ids)
             elif c.op in (ConstraintOp.NEQ, ConstraintOp.NOT_IN):
                 if days:
                     paper_not_day.setdefault(pid, []).extend(days)
+
+        elif c.subject_type == "topic":
+            # topic_X = paper_Y  →  paper Y must be in topic X
+            tid = int(c.subject_id) if c.subject_id.isdigit() else 0
+            if not tid:
+                continue
+            for v in c.value:
+                if v.startswith("paper_"):
+                    try:
+                        pid = int(v.split("_")[1])
+                        paper_topic.setdefault(pid, []).append(tid)
+                    except (IndexError, ValueError):
+                        pass
+
+        elif c.subject_type == "chair":
+            cid = int(c.subject_id) if c.subject_id.isdigit() else 0
+            if not cid:
+                continue
+            for v in c.value:
+                if v.startswith("session_"):
+                    chair_session.setdefault(cid, []).append(v.split("_", 1)[1])
+                elif v.startswith("topic_"):
+                    try:
+                        chair_topic.setdefault(cid, []).append(int(v.split("_")[1]))
+                    except (IndexError, ValueError):
+                        pass
 
         elif c.subject_type == "section":
             if c.op == ConstraintOp.EQ and c.value:
@@ -327,9 +363,12 @@ def _parse_constraints(
         "paper_day": paper_day,
         "paper_session": paper_session,
         "paper_not_day": paper_not_day,
+        "paper_topic": paper_topic,
         "session_labels": session_labels,
         "paper_same_session": paper_same_session,
         "paper_precedence": paper_precedence,
+        "chair_session": chair_session,
+        "chair_topic": chair_topic,
     }
 
 
@@ -509,6 +548,108 @@ def assign_papers(
     parsed = _parse_constraints(cfg.constraints, papers, sessions)
 
     caps = [_session_capacity(s, cfg) for s in sessions]
+
+    # ── Pre-defined sessions ──
+    paper_by_id = {p.paper_id: p for p in papers}
+    predef_paper_ids: set[int] = set()
+    predef_chairs: dict[str, int] = {}  # session_id -> chair_id
+
+    def _norm_time(t: str) -> str:
+        """Normalise 'HH.MM' or 'HH:MM' to 'HH:MM'."""
+        return t.replace(".", ":")
+
+    # Track (day, slot_start) pairs already used by each topic from predef
+    # sessions, so we avoid placing same-topic sessions in parallel.
+    predef_slot_topics: dict[tuple[int, str], set[int | None]] = {}
+
+    for predef in cfg.predefined_sessions:
+        if not predef.papers:
+            continue
+        # Find Paper objects for this pre-defined session
+        predef_papers = [
+            paper_by_id[pid] for pid in predef.papers if pid in paper_by_id
+        ]
+        if not predef_papers:
+            logger.warning("Pre-defined session has no matching papers: %s", predef.papers)
+            continue
+        # Maintain the user-specified order
+        pid_order = {pid: i for i, pid in enumerate(predef.papers)}
+        predef_papers.sort(key=lambda p: pid_order.get(p.paper_id, 999))
+
+        # Find a suitable non-fixed session slot with enough capacity.
+        # When day/start/end are set, restrict to matching slots.
+        # Otherwise avoid time-slots already holding a same-topic predef session.
+        best_j = -1
+        for j in range(len(sessions)):
+            if sessions[j].is_fixed or sessions[j].papers:
+                continue
+            if caps[j] < len(predef_papers):
+                continue
+            ts = sessions[j].time_slot
+
+            # --- day/start/end pinning ---
+            if predef.day is not None and sessions[j].day != predef.day:
+                continue
+            if predef.start is not None and ts is not None:
+                if _norm_time(ts.start) != _norm_time(predef.start):
+                    continue
+            if predef.end is not None and ts is not None:
+                if _norm_time(ts.end) != _norm_time(predef.end):
+                    continue
+
+            # --- avoid same-topic in same time-slot (parallel) ---
+            if ts is not None:
+                slot_key = (sessions[j].day, _norm_time(ts.start))
+                used_topics = predef_slot_topics.get(slot_key, set())
+                if predef.topic is not None and predef.topic in used_topics:
+                    continue
+
+            best_j = j
+            break
+
+        if best_j < 0:
+            logger.warning(
+                "No available session slot for pre-defined session (papers=%s)",
+                predef.papers,
+            )
+            continue
+
+        sessions[best_j].papers = predef_papers
+        sessions[best_j].is_fixed = True
+        if predef.topic is not None and predef.topic in tid_to_topic:
+            sessions[best_j].topic = tid_to_topic[predef.topic]
+        if predef.label:
+            sessions[best_j].label = predef.label
+        if predef.chair is not None:
+            predef_chairs[sessions[best_j].session_id] = predef.chair
+        predef_paper_ids.update(p.paper_id for p in predef_papers)
+
+        # Record topic usage in this time slot
+        ts_best = sessions[best_j].time_slot
+        if ts_best is not None:
+            sk = (sessions[best_j].day, _norm_time(ts_best.start))
+            predef_slot_topics.setdefault(sk, set()).add(predef.topic)
+
+        logger.info(
+            "Pre-defined session placed in %s (day %d): %d papers, topic=%s, label=%r",
+            sessions[best_j].session_id, sessions[best_j].day,
+            len(predef_papers),
+            predef.topic if predef.topic is not None else "auto",
+            predef.label or "(none)",
+        )
+
+    # Exclude pre-defined papers from the solver
+    if predef_paper_ids:
+        papers = [p for p in papers if p.paper_id not in predef_paper_ids]
+        logger.info(
+            "Excluded %d pre-defined papers; %d papers remain for solver",
+            len(predef_paper_ids), len(papers),
+        )
+
+    # Store pre-defined chair mapping for assign_chairs
+    if predef_chairs:
+        program.metadata["predefined_chairs"] = predef_chairs
+
     total_cap = sum(c for j, c in enumerate(caps) if not sessions[j].is_fixed)
     n_papers = len(papers)
     n_sessions = len(sessions)
@@ -592,6 +733,23 @@ def assign_papers(
         ia, ib = paper_idx[pid_a], paper_idx[pid_b]
         for j in range(n_sessions):
             model.add(x[ia][j] == x[ib][j])
+
+    # Paper-topic constraints: paper can only go to sessions with matching topic
+    for pid, allowed_tids in parsed["paper_topic"].items():
+        if pid not in paper_idx:
+            continue
+        i = paper_idx[pid]
+        for j in range(n_sessions):
+            ctid = sess_topic_map.get(j)
+            if ctid is None or ctid not in allowed_tids:
+                # Also check if any member topic matches
+                matched = False
+                if ctid is not None:
+                    members = topic_groups.get(ctid, [ctid])
+                    if any(mt in allowed_tids for mt in members):
+                        matched = True
+                if not matched:
+                    model.add(x[i][j] == 0)
 
     # Paper-paper precedence constraints: paper_A < paper_B
     # At CP-SAT level this means same-session; ordering is applied post-solve.
@@ -682,6 +840,12 @@ def assign_papers(
 
     program.metadata["generated"] = "papers_assigned"
     program.metadata["solver_objective"] = solver.objective_value
-    program.metadata["papers_assigned"] = assigned_count
-    program.metadata["papers_total"] = n_papers
+    program.metadata["papers_assigned"] = assigned_count + len(predef_paper_ids)
+    program.metadata["papers_total"] = n_papers + len(predef_paper_ids)
+    # Store parsed chair/topic constraints for assign_chairs
+    if parsed["chair_session"] or parsed["chair_topic"]:
+        program.metadata["chair_constraints"] = {
+            "chair_session": {str(k): v for k, v in parsed["chair_session"].items()},
+            "chair_topic": {str(k): v for k, v in parsed["chair_topic"].items()},
+        }
     return program

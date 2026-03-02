@@ -232,6 +232,15 @@ def cmd_papers(args):
     prog.save(args.output)
     logger.info("Papers assigned → %s", args.output)
 
+    # Write unassigned papers
+    from cpm.output import write_unassigned_papers
+    ua_path = str(Path(args.output).parent / "unassigned_papers.csv")
+    unassigned = write_unassigned_papers(prog, papers, ua_path)
+    if unassigned:
+        logger.info("%d unassigned papers → %s", len(unassigned), ua_path)
+    else:
+        logger.info("All %d papers assigned.", len(papers))
+
 
 def cmd_rooms(args):
     """Assign rooms to sessions."""
@@ -284,9 +293,10 @@ def cmd_chairs(args):
 
 
 def cmd_output(args):
-    """Render the programme to Markdown, LaTeX, LaTeX folder, or CMS CSV."""
+    """Render the programme to Markdown, LaTeX, LaTeX folder, mobile HTML, or CMS CSV."""
     from cpm.output import write_cms_csvs, write_program
     from cpm.output_latex import generate_latex_folder
+    from cpm.output_mobile import generate_mobile_html
 
     prog = _load_program(args.program)
 
@@ -295,6 +305,12 @@ def cmd_output(args):
         out_dir = args.output or "output/latex"
         generate_latex_folder(prog, out_dir, latex_config=latex_cfg)
         logger.info("LaTeX folder written to %s", out_dir)
+    elif args.format == "mobile":
+        latex_cfg = args.latex_config or None
+        out_file = args.output or "output/programme.html"
+        _ensure_dir(out_file)
+        generate_mobile_html(prog, out_file, latex_config=latex_cfg)
+        logger.info("Mobile HTML written to %s", out_file)
     elif args.format == "cms-csv":
         sess_out = args.cms_sessions or "output/cms_sessions.csv"
         pres_out = args.cms_presentations or "output/cms_presentations.csv"
@@ -367,6 +383,14 @@ def cmd_generate(args):
     papers = load_papers(args.papers, mapping)
     topics = load_topics(args.topics)
 
+    # Copy day_names from latex config if schedule config doesn't have them
+    latex_cfg_path = getattr(args, "latex_config", None)
+    if latex_cfg_path and Path(latex_cfg_path).exists() and not cfg.day_names:
+        from cpm.output_latex import LaTeXConfig as _LCfg
+        _lcfg = _LCfg.load(latex_cfg_path)
+        if _lcfg.day_names:
+            cfg.day_names = _lcfg.day_names
+
     # Step 1 – dummy programme
     logger.info("Step 1/6: generating dummy programme …")
     prog = generate_dummy_program(cfg)
@@ -410,6 +434,15 @@ def cmd_generate(args):
         topic_sim_matrix=topic_sim,
     )
 
+    # Write unassigned papers
+    from cpm.output import write_unassigned_papers
+    ua_path = str(Path(args.output or "output/program.json").parent / "unassigned_papers.csv")
+    unassigned = write_unassigned_papers(prog, papers, ua_path)
+    if unassigned:
+        logger.info("%d unassigned papers → %s", len(unassigned), ua_path)
+    else:
+        logger.info("All %d papers assigned.", len(papers))
+
     # Step 4 – assign rooms
     logger.info("Step 4/6: assigning rooms …")
     if args.rooms and Path(args.rooms).exists():
@@ -438,8 +471,16 @@ def cmd_generate(args):
         from cpm.output_latex import generate_latex_folder
         latex_dir = str(Path(prog_out).parent / "latex")
         latex_cfg = getattr(args, "latex_config", None)
-        generate_latex_folder(prog, latex_dir, latex_config=latex_cfg)
+        generate_latex_folder(
+            prog, latex_dir, latex_config=latex_cfg, papers=papers,
+        )
         logger.info("Done. Programme → %s, LaTeX folder → %s", prog_out, latex_dir)
+    elif fmt == "mobile":
+        from cpm.output_mobile import generate_mobile_html
+        mobile_out = str(Path(prog_out).parent / "programme.html")
+        latex_cfg = getattr(args, "latex_config", None)
+        generate_mobile_html(prog, mobile_out, latex_config=latex_cfg)
+        logger.info("Done. Programme → %s, Mobile HTML → %s", prog_out, mobile_out)
     elif fmt == "cms-csv":
         from cpm.output import write_cms_csvs
         base = Path(prog_out).parent
@@ -519,9 +560,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_chairs)
 
     # ---- output ----
-    sp = sub.add_parser("output", help="Render programme to md/latex/latex-folder/cms-csv")
+    sp = sub.add_parser("output", help="Render programme to md/latex/latex-folder/mobile/cms-csv")
     sp.add_argument("--program", required=True)
-    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "cms-csv"],
+    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "mobile", "cms-csv"],
                     default="md")
     sp.add_argument("--output", default="output/program.md",
                     help="Output file (md/latex) or directory (latex-folder)")
@@ -555,9 +596,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--chairs", help="Chairs CSV (optional)")
     sp.add_argument("--num-chairs", type=int, default=10)
     sp.add_argument("--output", default="output/program.json")
-    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "cms-csv"],
+    sp.add_argument("--format", choices=["md", "latex", "latex-folder", "mobile", "cms-csv"],
                     default="md")
-    sp.add_argument("--latex-config", help="LaTeX config JSON (for latex-folder)")
+    sp.add_argument("--latex-config", help="LaTeX config JSON (for latex-folder/mobile)")
     sp.add_argument("--use-sbert", action="store_true")
     sp.add_argument("--model", default="all-MiniLM-L6-v2")
     sp.add_argument("--sbert-scores", help="Pre-computed SBERT scores JSON")

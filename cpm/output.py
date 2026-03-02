@@ -6,7 +6,7 @@ import csv
 import io
 from pathlib import Path
 
-from .models import Program, Session, SlotKind, TimeSlot
+from .models import Paper, Program, Session, SlotKind, TimeSlot
 
 
 # ---------------------------------------------------------------------------
@@ -263,3 +263,63 @@ def write_program(program: Program, path: str | Path, fmt: str = "md") -> None:
     else:
         text = program_to_markdown(program)
     Path(path).write_text(text, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Unassigned papers
+# ---------------------------------------------------------------------------
+
+def _assigned_paper_ids(program: Program) -> set[int]:
+    """Return the set of paper IDs that appear in any session of *program*."""
+    ids: set[int] = set()
+    for day_prog in program.days:
+        for slot in day_prog.slots:
+            for sess in slot.get("sessions", []):
+                if isinstance(sess, Session):
+                    for p in sess.papers:
+                        ids.add(p.paper_id)
+    return ids
+
+
+def find_unassigned_papers(
+    program: Program, papers: list[Paper],
+) -> list[Paper]:
+    """Return papers that are not assigned to any session in *program*."""
+    assigned = _assigned_paper_ids(program)
+    return [p for p in papers if p.paper_id not in assigned]
+
+
+def write_unassigned_papers(
+    program: Program,
+    papers: list[Paper],
+    path: str | Path,
+    sep: str = ";",
+) -> list[Paper]:
+    """Write unassigned papers to a CSV file.
+
+    Columns: paper_id, title, authors, affiliations, emails, preferences, comment
+
+    Returns the list of unassigned papers.
+    """
+    unassigned = find_unassigned_papers(program, papers)
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=sep, quoting=csv.QUOTE_ALL)
+    writer.writerow([
+        "paper_id", "title", "authors", "affiliations", "emails",
+        "preferences", "comment",
+    ])
+    for p in unassigned:
+        authors = " | ".join(a.name for a in p.authors if a.name)
+        affiliations = " | ".join(a.affiliation for a in p.authors if a.affiliation)
+        emails = " | ".join(a.email for a in p.authors if a.email)
+        prefs = ", ".join(str(pid) for pid in p.pref_ids)
+        writer.writerow([
+            p.paper_id, p.title, authors, affiliations, emails,
+            prefs, p.comment,
+        ])
+
+    out.write_text(buf.getvalue(), encoding="utf-8")
+    return unassigned

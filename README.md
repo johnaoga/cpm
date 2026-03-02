@@ -109,12 +109,19 @@ cpm/
 | `lunch_target` | Target start time for lunch (default `"12:00"`) |
 | `afternoon_break_target` | Target start time for afternoon break (default `"15:00"`) |
 | `dinner_included`, `dinner_start` | Dinner settings |
-| `room_change_penalty_min` | Time penalty for room changes |
+| `room_change_penalty_min` | Minutes gap after plenaries/sessions for room changes (default `5`) |
+| `day_names` | Day names for session naming, e.g. `["Tuesday", "Wednesday"]` |
 | `plenary_slots` | Reserved slots (keynotes, welcome, closing) |
 | `constraints` | Scheduling constraints (see [Constraints](#constraints)) |
 | `extra` | Free-form dict for additional tunables (see [Extra options](#extra-options)) |
 
 When `morning_break`, `lunch_included`, or `afternoon_break` are `true`, the scheduler places them at (or as close as possible to) the corresponding target time. These targets can be overridden per-conference.
+
+**Session naming**: When `day_names` is set, sessions are named `{Day3}{M|A}{NN}` (e.g. `TueM01`, `WedA03`) using the first 3 letters of the day name, `M`/`A` for morning/afternoon, and a per-period sequence number. Without `day_names`, sessions use `S01`, `S02`, … globally.
+
+**Room change penalty**: After plenary slots (keynotes, etc.) and session blocks, the scheduler inserts a gap of `room_change_penalty_min` minutes before the next session to allow attendees to change rooms. Breaks and lunches already provide natural gaps, so no additional penalty is applied after them.
+
+**Per-day lunch/break overrides**: Explicit constraints like `lunch_1 = 12:30` take priority over the auto-placement heuristic, ensuring lunch is placed at exactly that time.
 
 ### Column Mapping (`column_mapping.json`)
 
@@ -176,6 +183,7 @@ Constraints are listed in the `constraints` array of `schedule_config.json`. The
 | `day_<N>` | Conference day number | `day_1`, `day_3` |
 | `S<NN>` | Session ID | `S01`, `S12` |
 | `paper_<id>` | Another paper (for same-session / precedence) | `paper_42` |
+| `TueM01`, `WedA03` | Session ID (when `day_names` is set) | `TueM01` |
 | `HH:MM` | Time value (for break/lunch overrides) | `10:15` |
 | `"<text>"` | Label string | `"Welcome"` |
 | `{v1, v2, …}` | Set of values | `{day_1, day_2}` |
@@ -264,8 +272,14 @@ When the extended format is used, the assignment logic enforces:
 |---|---|---|
 | Markdown | `--format md` | Single `.md` file |
 | LaTeX | `--format latex` | Single `.tex` file |
-| LaTeX folder | `--format latex-folder` | Full LaTeX project (main.tex, commands.tex, front.tex, dayN.tex, …) matching the Benelux boa style. Requires `--latex-config`. |
+| LaTeX folder | `--format latex-folder` | Full LaTeX project (main.tex, commands.tex, front.tex, program.tex, per-period day files, participants.tex) matching the Benelux boa style. Requires `--latex-config`. |
 | CMS CSV | `--format cms-csv` | Two CSV files: `cms_sessions.csv` and `cms_presentations.csv` for import into conference management systems. |
+
+The LaTeX folder output:
+- **`program.tex`** interleaves plenary headings and `\input{dayN_period}` files in correct time order.
+- **Per-period day files** (`day1_tuesday_p0.tex`, `day2_wednesday_p1.tex`, …) contain session headings and talks for each contiguous session block.
+- **`participants.tex`** is auto-generated from paper author data (sorted alphabetically by last name).
+- **Logo**: if `logo_file` is set in `latex_config.json`, the file is resolved relative to the config directory (or its parent `data/` folder) and copied into the output.
 
 ## Capacity Pre-flight Check
 

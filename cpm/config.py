@@ -11,6 +11,24 @@ from .models import Constraint
 
 
 @dataclass
+class PreDefinedSession:
+    """A pre-defined session with some fixed attributes.
+
+    Papers are required; topic, chair, label, day, start, end are optional.
+    When day/start/end are set the session is pinned to the matching slot.
+    Missing attributes (time slot, room, and optionally topic/chair)
+    are derived during the assignment steps.
+    """
+    papers: list[int] = field(default_factory=list)
+    topic: Optional[int] = None
+    chair: Optional[int] = None
+    label: str = ""
+    day: Optional[int] = None       # pin to a specific day
+    start: Optional[str] = None     # "HH:MM" — pin to a specific start time
+    end: Optional[str] = None       # "HH:MM" — pin to a specific end time
+
+
+@dataclass
 class PlenarySlot:
     """A reserved slot in the schedule (e.g. keynote, welcome, closing)."""
     label: str
@@ -54,8 +72,14 @@ class ScheduleConfig:
     # --- room-change penalty ---
     room_change_penalty_min: int = 5
 
+    # --- day names (for session naming, e.g. ["Tuesday", "Wednesday", "Thursday"]) ---
+    day_names: list[str] = field(default_factory=list)
+
     # --- plenary / reserved slots ---
     plenary_slots: list[PlenarySlot] = field(default_factory=list)
+
+    # --- pre-defined sessions (special sessions with fixed papers/topic/chair) ---
+    predefined_sessions: list[PreDefinedSession] = field(default_factory=list)
 
     # --- constraints (free-form list) ---
     constraints: list[Constraint] = field(default_factory=list)
@@ -104,6 +128,26 @@ class ScheduleConfig:
         for k, v in self.__dict__.items():
             if k == "plenary_slots":
                 d[k] = [ps.__dict__ for ps in v]
+            elif k == "predefined_sessions":
+                out = []
+                for ps in v:
+                    pd = {}
+                    if ps.papers:
+                        pd["papers"] = ps.papers
+                    if ps.topic is not None:
+                        pd["topic"] = ps.topic
+                    if ps.chair is not None:
+                        pd["chair"] = ps.chair
+                    if ps.label:
+                        pd["label"] = ps.label
+                    if ps.day is not None:
+                        pd["day"] = ps.day
+                    if ps.start is not None:
+                        pd["start"] = ps.start
+                    if ps.end is not None:
+                        pd["end"] = ps.end
+                    out.append(pd)
+                d["sessions"] = out
             elif k == "constraints":
                 d[k] = [c.to_text() for c in v]
             else:
@@ -113,6 +157,7 @@ class ScheduleConfig:
     @classmethod
     def _from_dict(cls, raw: dict) -> "ScheduleConfig":
         prelim_raw = raw.pop("plenary_slots", [])
+        sessions_raw = raw.pop("sessions", [])
         constr_raw = raw.pop("constraints", [])
         extra = raw.pop("extra", {})
 
@@ -126,6 +171,13 @@ class ScheduleConfig:
             PlenarySlot(**ps) if isinstance(ps, dict) else ps
             for ps in prelim_raw
         ]
+        _ps_fields = set(PreDefinedSession.__dataclass_fields__)
+        cfg.predefined_sessions = [
+            PreDefinedSession(**{k: v for k, v in ps.items() if k in _ps_fields})
+            if isinstance(ps, dict) else ps
+            for ps in sessions_raw
+        ]
+
         cfg.constraints = []
         for i, c in enumerate(constr_raw):
             if isinstance(c, str):

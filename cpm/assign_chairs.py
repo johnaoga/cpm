@@ -101,6 +101,20 @@ def assign_chairs(
     if papers:
         _infer_chair_topics(chairs, papers)
 
+    chair_by_id = {ch.chair_id: ch for ch in chairs}
+
+    # Parse pre-defined chair assignments and chair constraints from metadata
+    predef_chairs: dict[str, int] = program.metadata.get("predefined_chairs", {})
+    chair_constr = program.metadata.get("chair_constraints", {})
+    # chair_session: {chair_id_str: [session_id, ...]}
+    chair_session_map: dict[int, list[str]] = {
+        int(k): v for k, v in chair_constr.get("chair_session", {}).items()
+    }
+    # chair_topic: {chair_id_str: [topic_id, ...]}
+    chair_topic_map: dict[int, list[int]] = {
+        int(k): v for k, v in chair_constr.get("chair_topic", {}).items()
+    }
+
     # Collect all (day, slot_sessions) groups
     slot_groups: list[tuple[int, list[Session]]] = []
     for day_prog in program.days:
@@ -110,13 +124,53 @@ def assign_chairs(
                 continue
             slot_groups.append((day_prog.day, slot["sessions"]))
 
-    # Track load for even distribution
+    # Apply pre-defined chair assignments first
+    for sess_id, chair_id in predef_chairs.items():
+        if chair_id not in chair_by_id:
+            logger.warning("Pre-defined chair %d not found in chairs list", chair_id)
+            continue
+        ch = chair_by_id[chair_id]
+        for _day, sessions in slot_groups:
+            for sess in sessions:
+                if sess.session_id == sess_id:
+                    sess.chair = ch
+                    logger.info(
+                        "Pre-defined chair %s assigned to session %s",
+                        ch.name, sess_id,
+                    )
+
+    # Apply chair_X = session_Y constraints
+    for chair_id, sess_ids in chair_session_map.items():
+        if chair_id not in chair_by_id:
+            continue
+        ch = chair_by_id[chair_id]
+        for _day, sessions in slot_groups:
+            for sess in sessions:
+                if sess.session_id in sess_ids and sess.chair is None:
+                    sess.chair = ch
+                    logger.info(
+                        "Constraint: chair %s assigned to session %s",
+                        ch.name, sess.session_id,
+                    )
+
+    # Track load for even distribution (include pre-assigned chairs)
     chair_load: dict[int, int] = defaultdict(int)
+    for _day, sessions in slot_groups:
+        for sess in sessions:
+            if sess.chair:
+                chair_load[sess.chair.chair_id] += 1
 
     for day, sessions in slot_groups:
         used_in_slot: set[int] = set()
+        # Record chairs already assigned in this slot
+        for sess in sessions:
+            if sess.chair:
+                used_in_slot.add(sess.chair.chair_id)
 
         for sess in sessions:
+            if sess.chair is not None:
+                continue  # already assigned (pre-defined or constraint)
+
             # Score each candidate chair
             best_chair: Optional[Chair] = None
             best_score = -float("inf")
@@ -131,6 +185,11 @@ def assign_chairs(
                     continue
                 if _chair_presents_in_slot(ch, sessions):
                     continue
+                # chair_topic constraint: chair can only chair matching topics
+                if ch.chair_id in chair_topic_map:
+                    allowed_topics = chair_topic_map[ch.chair_id]
+                    if sess.topic and sess.topic.topic_id not in allowed_topics:
+                        continue
 
                 # Soft score: topic match + load balancing
                 score = 0.0

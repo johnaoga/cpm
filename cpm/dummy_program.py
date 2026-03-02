@@ -100,17 +100,39 @@ def _build_day_slots(
         day, _minutes(cfg.afternoon_break_target) if cfg.afternoon_break_target else _minutes("15:00"),
     )
 
+    has_explicit_lunch = day in break_overrides["lunch"]
+    has_explicit_ab = day in break_overrides["afternoon_break"]
+
     # If effective start is already past the morning break target, skip it
     can_morning = cfg.morning_break and eff_start < mb_target
     morning_break_target = mb_target if can_morning else end + 1
-    lunch_target = max(lu_target, eff_start + 80)
-    afternoon_break_target = max(ab_target, lunch_target + cfg.lunch_duration_min + 80)
+    # Explicit per-day overrides bypass the eff_start guard
+    if has_explicit_lunch:
+        lunch_target = lu_target
+    else:
+        lunch_target = max(lu_target, eff_start + 80)
+    if has_explicit_ab:
+        afternoon_break_target = ab_target
+    else:
+        afternoon_break_target = max(ab_target, lunch_target + cfg.lunch_duration_min + 80)
 
     placed_morning_break = not can_morning
     placed_lunch = not cfg.lunch_included
     placed_afternoon_break = not cfg.afternoon_break
 
-    while cursor + cfg.presentation_duration_min <= end:
+    # Track whether a room-change gap is needed before the next session
+    need_room_change = False
+    # Per-day session counters for morning/afternoon naming
+    morning_session_num = 0
+    afternoon_session_num = 0
+    is_afternoon = False  # flips after lunch is placed
+
+    # Determine day prefix for session IDs (e.g. "Tue", "Wed")
+    day_prefix = ""
+    if cfg.day_names and day - 1 < len(cfg.day_names):
+        day_prefix = cfg.day_names[day - 1][:3]
+
+    while cursor + cfg.presentation_duration_min <= end or prelim_idx < len(prelims):
         # Check if a plenary slot starts here (or before the next session)
         if prelim_idx < len(prelims):
             ps = prelims[prelim_idx]
@@ -134,9 +156,17 @@ def _build_day_slots(
                     is_fixed=True,
                 )
                 slots.append({"time_slot": ts, "sessions": [sess]})
-                cursor = ps_end
+                cursor = max(ps_end, cursor)
                 prelim_idx += 1
+                need_room_change = True
                 continue
+
+        # If we're past end but still have plenaries, advance to next plenary
+        if cursor + cfg.presentation_duration_min > end:
+            if prelim_idx < len(prelims):
+                cursor = _minutes(prelims[prelim_idx].start)
+                continue
+            break
 
         # Morning break
         if not placed_morning_break and cursor >= morning_break_target:
@@ -150,6 +180,7 @@ def _build_day_slots(
             slots.append({"time_slot": ts, "sessions": []})
             cursor += cfg.break_duration_min
             placed_morning_break = True
+            need_room_change = False  # break already provides a gap
             continue
 
         # Lunch
@@ -164,6 +195,8 @@ def _build_day_slots(
             slots.append({"time_slot": ts, "sessions": []})
             cursor += cfg.lunch_duration_min
             placed_lunch = True
+            is_afternoon = True
+            need_room_change = False  # lunch already provides a gap
             continue
 
         # Afternoon break
@@ -178,7 +211,13 @@ def _build_day_slots(
             slots.append({"time_slot": ts, "sessions": []})
             cursor += cfg.break_duration_min
             placed_afternoon_break = True
+            need_room_change = False  # break already provides a gap
             continue
+
+        # Apply room-change penalty gap before sessions
+        if need_room_change:
+            cursor += cfg.room_change_penalty_min
+            need_room_change = False
 
         # Regular session slot
         sess_end = min(cursor + cfg.max_session_duration_min, end)
@@ -186,6 +225,13 @@ def _build_day_slots(
         if prelim_idx < len(prelims):
             ps_start = _minutes(prelims[prelim_idx].start)
             sess_end = min(sess_end, ps_start)
+        # Don't overshoot into upcoming lunch/break targets
+        if not placed_lunch:
+            sess_end = min(sess_end, lunch_target)
+        if not placed_morning_break:
+            sess_end = min(sess_end, morning_break_target)
+        if not placed_afternoon_break:
+            sess_end = min(sess_end, afternoon_break_target)
 
         if sess_end - cursor < cfg.presentation_duration_min:
             cursor = sess_end
@@ -198,14 +244,18 @@ def _build_day_slots(
             label="",
             day=day,
         )
-        n_papers = (sess_end - cursor) // cfg.presentation_duration_min
-
         # Create parallel sessions (one per room available)
         sessions: list[Session] = []
         rooms_this_day = min(cfg.num_available_rooms, cfg.max_rooms_per_day)
         for r in range(rooms_this_day):
             session_counter[0] += 1
-            sid = f"S{session_counter[0]:02d}"
+            # Session naming: {DayPrefix}{M|A}{num} or fallback S{nn}
+            if day_prefix:
+                period = "A" if is_afternoon else "M"
+                num = (afternoon_session_num if is_afternoon else morning_session_num) + r + 1
+                sid = f"{day_prefix}{period}{num:02d}"
+            else:
+                sid = f"S{session_counter[0]:02d}"
             label = fixed_labels.get(sid, "")
             is_fixed = sid in fixed_labels
             sess = Session(
@@ -216,9 +266,15 @@ def _build_day_slots(
                 is_fixed=is_fixed,
             )
             sessions.append(sess)
+        # Advance per-period counter by the number of parallel sessions
+        if is_afternoon:
+            afternoon_session_num += rooms_this_day
+        else:
+            morning_session_num += rooms_this_day
 
         slots.append({"time_slot": ts, "sessions": sessions})
         cursor = sess_end
+        need_room_change = True
 
     # Dinner (after day_end if included)
     if cfg.dinner_included:
