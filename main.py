@@ -303,7 +303,11 @@ def cmd_output(args):
     if args.format == "latex-folder":
         latex_cfg = args.latex_config or None
         out_dir = args.output or "output/latex"
-        generate_latex_folder(prog, out_dir, latex_config=latex_cfg)
+        abs_tpl = getattr(args, "with_abstracts", None) or None
+        generate_latex_folder(
+            prog, out_dir, latex_config=latex_cfg,
+            abstract_pdf_template=abs_tpl,
+        )
         logger.info("LaTeX folder written to %s", out_dir)
     elif args.format == "mobile":
         latex_cfg = args.latex_config or None
@@ -471,8 +475,10 @@ def cmd_generate(args):
         from cpm.output_latex import generate_latex_folder
         latex_dir = str(Path(prog_out).parent / "latex")
         latex_cfg = getattr(args, "latex_config", None)
+        abs_tpl = getattr(args, "with_abstracts", None) or None
         generate_latex_folder(
             prog, latex_dir, latex_config=latex_cfg, papers=papers,
+            abstract_pdf_template=abs_tpl,
         )
         logger.info("Done. Programme → %s, LaTeX folder → %s", prog_out, latex_dir)
     elif fmt == "mobile":
@@ -571,6 +577,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cms-presentations", help="Output path for CMS presentations CSV")
     sp.add_argument("--presentation-duration", type=int, default=1200,
                     help="Presentation duration in seconds for CMS CSV (default: 1200)")
+    sp.add_argument("--with-abstracts", default=None,
+                    help="PDF path template for abstracts, e.g. 'pdf/conf_<id>.pdf' (latex-folder)")
     sp.set_defaults(func=cmd_output)
 
     # ---- similarity ----
@@ -605,6 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--topic-sim", help="Pre-computed topic similarity JSON")
     sp.add_argument("--force", action="store_true",
                     help="Proceed even if capacity is insufficient")
+    sp.add_argument("--with-abstracts", default=None,
+                    help="PDF path template for abstracts, e.g. 'pdf/conf_<id>.pdf' (latex-folder)")
     sp.set_defaults(func=cmd_generate)
 
     return p

@@ -125,7 +125,8 @@ if [ -f "$LATEX_CFG" ]; then
     --program "$OUTPUT_DIR/program_chairs.json" \
     --format latex-folder \
     --latex-config "$LATEX_CFG" \
-    --output "$OUTPUT_DIR/latex"
+    --output "$OUTPUT_DIR/latex" \
+    --with-abstracts "pdf/bmsc2026_<id>.pdf"
   echo ""
 
   $PYTHON main.py output \
