@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conf-program-manager"
+dynamic = ["version"]
+description = "Generate structured conference programmes from paper submission data, topic preferences, room/chair resources, and scheduling constraints."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "John Aoga"},
+]
+keywords = ["conference", "programme", "scheduler", "paper-assignment", "session-planning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+    "ortools>=9.7",
+    "pandas>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+similarity = [
+    "sentence-transformers>=2.2.0",
+]
+dev = [
+    "build",
+    "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/johnaoga/cpm"
+Repository = "https://github.com/johnaoga/cpm"
+
+[project.scripts]
+cpm = "cpm.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "cpm.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["cpm*"]
+
+[tool.setuptools.package-data]
+cpm = ["py.typed"]

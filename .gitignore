@@ -6,3 +6,9 @@ examples/benelux/
 examples/*/output/
 output/
 .DS_Store
+
+# Packaging / build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
