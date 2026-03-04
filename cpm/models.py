@@ -161,6 +161,8 @@ class TimeSlot:
     kind: SlotKind = SlotKind.SESSION
     label: str = ""
     day: int = 1
+    chair: str = ""     # plenary chair name (optional)
+    speaker: str = ""   # plenary speaker name (optional)
 
     @property
     def start_time(self) -> time:
@@ -236,6 +238,52 @@ class Program:
     @classmethod
     def load(cls, path: str | Path) -> "Program":
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------------------
+# Topic display names with Roman numeral suffixes
+# ---------------------------------------------------------------------------
+
+_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+          "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"]
+
+
+def build_topic_display_names(program: "Program") -> dict[str, str]:
+    """Build a mapping ``session_id → display topic name``.
+
+    When a topic appears in more than one session across the entire
+    programme, each occurrence gets a Roman-numeral suffix
+    (e.g. *Robotics I*, *Robotics II*).  Topics that appear only once
+    keep their original name.
+    """
+    # First pass: count how many sessions each topic_id has
+    topic_count: dict[int, int] = {}
+    for dp in program.days:
+        for slot in dp.slots:
+            for sess in slot.get("sessions", []):
+                if hasattr(sess, "topic") and sess.topic:
+                    tid = sess.topic.topic_id
+                    topic_count[tid] = topic_count.get(tid, 0) + 1
+
+    # Second pass: assign ordinals
+    topic_ordinal: dict[int, int] = {}  # topic_id -> next ordinal
+    result: dict[str, str] = {}
+    for dp in program.days:
+        for slot in dp.slots:
+            for sess in slot.get("sessions", []):
+                if not hasattr(sess, "topic") or not sess.topic:
+                    result[sess.session_id] = ""
+                    continue
+                tid = sess.topic.topic_id
+                name = sess.topic.name
+                if topic_count.get(tid, 1) > 1:
+                    idx = topic_ordinal.get(tid, 0)
+                    suffix = _ROMAN[idx] if idx < len(_ROMAN) else str(idx + 1)
+                    topic_ordinal[tid] = idx + 1
+                    result[sess.session_id] = f"{name} {suffix}"
+                else:
+                    result[sess.session_id] = name
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +367,8 @@ def _program_from_dict(d: dict) -> Program:
                 kind=SlotKind(ts_raw.get("kind", "session")),
                 label=ts_raw.get("label", ""),
                 day=ts_raw.get("day", dd.get("day", 1)),
+                chair=ts_raw.get("chair", ""),
+                speaker=ts_raw.get("speaker", ""),
             )
             sessions: list[dict] = []
             for sess_raw in s.get("sessions", []):
@@ -339,6 +389,8 @@ def _session_from_dict(d: dict) -> Session:
             kind=SlotKind(ts_raw.get("kind", "session")),
             label=ts_raw.get("label", ""),
             day=ts_raw.get("day", 1),
+            chair=ts_raw.get("chair", ""),
+            speaker=ts_raw.get("speaker", ""),
         )
     topic_raw = d.get("topic")
     topic = Topic(**topic_raw) if topic_raw else None

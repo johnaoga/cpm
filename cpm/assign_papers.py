@@ -354,6 +354,9 @@ def _parse_constraints(
                         chair_topic.setdefault(cid, []).append(int(v.split("_")[1]))
                     except (IndexError, ValueError):
                         pass
+                elif not v.startswith("day_"):
+                    # Bare session ID (e.g. "TueA03" instead of "session_TueA03")
+                    chair_session.setdefault(cid, []).append(v)
 
         elif c.subject_type == "section":
             if c.op == ConstraintOp.EQ and c.value:

@@ -35,7 +35,9 @@ class PlenarySlot:
     day: int
     start: str  # "HH:MM"
     end: str    # "HH:MM"
-    room: str = ""  # optional: pin to a specific room
+    room: str = ""      # optional: pin to a specific room
+    chair: str = ""     # optional: chair name for this plenary
+    speaker: str = ""   # optional: speaker / presenter name
 
 
 @dataclass

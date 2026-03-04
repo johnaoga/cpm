@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .models import Program, Session, SlotKind, TimeSlot
+from .models import Program, Session, SlotKind, TimeSlot, build_topic_display_names
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,7 @@ def _build_presentations(
 ) -> list[dict]:
     """Convert the programme into the flat presentation list expected by
     the mobile JS code."""
+    topic_names = build_topic_display_names(program)
     presentations: list[dict] = []
     pres_id = 1000
     session_counter = 100
@@ -132,7 +133,7 @@ def _build_presentations(
                     "SlotStartTime": start_dt,
                     "TimePerPaper": str(dur_min),
                     "social": "0",
-                    "FirstAuthor": "",
+                    "FirstAuthor": _esc(ts.speaker) if ts.speaker else "",
                     "Affiliation": "",
                     "Author 2 name": None,
                     "Affiliation 2": None,
@@ -142,7 +143,7 @@ def _build_presentations(
                     "keyID1": "0",
                     "keyID2": "0",
                     "Room": _esc(room_name),
-                    "Chair 1 Name": "",
+                    "Chair 1 Name": _esc(ts.chair) if ts.chair else "",
                     "formatDay": format_day,
                     "formatDate": f"{day_name[:3]} {ts.start} - {ts.end}",
                 })
@@ -157,7 +158,7 @@ def _build_presentations(
                 sess_id_str = str(session_counter)
                 room_name = sess.room.name if sess.room else ""
                 chair_name = sess.chair.name if sess.chair else ""
-                topic_name = sess.topic.name if sess.topic else ""
+                topic_name = topic_names.get(sess.session_id, sess.topic.name if sess.topic else "")
                 sess_label = sess.label or topic_name or sess.session_id
 
                 if not sess.papers:

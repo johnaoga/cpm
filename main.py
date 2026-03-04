@@ -7,6 +7,7 @@ Subcommands
   papers      Assign papers to sessions (OR-Tools CP-SAT).
   rooms       Assign rooms to sessions.
   chairs      Assign chairs to sessions.
+  edit        Manual post-output edits (swap, move, merge, chair ops).
   output      Render the programme to Markdown or LaTeX.
   similarity  Compute SBERT paper–topic scores and topic–topic matrix.
   generate    Run the full pipeline (dummy → papers → rooms → chairs → output).
@@ -292,6 +293,196 @@ def cmd_chairs(args):
     logger.info("Chairs assigned → %s", args.output)
 
 
+def cmd_edit(args):
+    """Manual post-output programme edits."""
+    from cpm.edit_program import (
+        add_paper,
+        list_sessions,
+        list_slots,
+        merge_sessions,
+        move_paper,
+        move_session,
+        move_slot,
+        replace_chair,
+        suggest_chairs,
+        swap_chairs,
+        swap_papers,
+        swap_sessions,
+    )
+
+    prog = _load_program(args.program)
+    action = args.action
+
+    if action == "list":
+        rows = list_sessions(prog)
+        fmt = "{:<12} {:>3} {:>11} {:<35} {:<10} {:<25} {:>3}"
+        print(fmt.format("Session", "Day", "Time", "Topic", "Room", "Chair", "#P"))
+        print("-" * 105)
+        for r in rows:
+            print(fmt.format(
+                r["session_id"], r["day"], r["time"],
+                r["topic"][:35], r["room"][:10],
+                r["chair"][:25], r["papers"],
+            ))
+        return
+
+    if action == "list-slots":
+        rows = list_slots(prog)
+        fmt = "{:<6} {:>3} {:>11} {:<10} {:<45} {}"
+        print(fmt.format("Ref", "Day", "Time", "Kind", "Label", "Sessions"))
+        print("-" * 120)
+        for r in rows:
+            print(fmt.format(
+                r["ref"], r["day"], r["time"],
+                r["kind"][:10], r["label"][:45],
+                r["sessions"],
+            ))
+        return
+
+    if action == "swap":
+        if not args.a or not args.b:
+            print("Error: --a and --b are required for swap")
+            sys.exit(1)
+        swap_sessions(prog, args.a, args.b)
+
+    elif action == "move":
+        if not args.a or not args.direction:
+            print("Error: --a and --direction (up/down) are required for move")
+            sys.exit(1)
+        move_session(prog, args.a, args.direction)
+
+    elif action == "move-slot":
+        if not args.a or not args.direction:
+            print("Error: --a (slot ref, e.g. P1_3 or 1:3) and --direction (up/down) are required")
+            sys.exit(1)
+        pres_dur = getattr(args, "presentation_duration", 20) or 20
+        move_slot(prog, args.a, args.direction, presentation_duration_min=pres_dur)
+
+    elif action == "move-paper":
+        if not args.paper_id:
+            print("Error: --paper-id is required for move-paper")
+            sys.exit(1)
+        to_sess = getattr(args, "to_session", None)
+        if not args.direction and not to_sess:
+            print("Error: --direction (up/down) or --to-session is required for move-paper")
+            sys.exit(1)
+        move_paper(prog, args.paper_id, direction=args.direction, to_session=to_sess)
+
+    elif action == "swap-papers":
+        if not args.paper_id or not args.paper_id_b:
+            print("Error: --paper-id and --paper-id-b are required for swap-papers")
+            sys.exit(1)
+        swap_papers(prog, args.paper_id, args.paper_id_b)
+
+    elif action == "add-paper":
+        if not args.paper_id or not args.a:
+            print("Error: --paper-id and --a (session ID) are required for add-paper")
+            sys.exit(1)
+        from cpm.models import Paper as PaperModel
+        # Try to load full paper data from CSV if provided
+        paper_obj = None
+        if args.papers and args.mapping:
+            mapping = _load_mapping(args.mapping)
+            from cpm.data_prep import load_papers
+            all_papers = load_papers(args.papers, mapping)
+            for p in all_papers:
+                if p.paper_id == args.paper_id:
+                    paper_obj = p
+                    break
+        if paper_obj is None:
+            title = getattr(args, "title", None) or f"Paper {args.paper_id}"
+            paper_obj = PaperModel(paper_id=args.paper_id, title=title)
+        add_paper(prog, args.a, paper_obj)
+
+    elif action == "merge":
+        if not args.a or not args.b:
+            print("Error: --a (keep) and --b (remove) are required for merge")
+            sys.exit(1)
+        merge_sessions(prog, args.a, args.b)
+
+    elif action == "swap-chairs":
+        if not args.a or not args.b:
+            print("Error: --a and --b are required for swap-chairs")
+            sys.exit(1)
+        swap_chairs(prog, args.a, args.b)
+
+    elif action == "replace-chair":
+        if not args.a:
+            print("Error: --a (session) is required for replace-chair")
+            sys.exit(1)
+        if args.chair_name:
+            # Find chair by name in the programme
+            from cpm.edit_program import _all_chairs
+            all_ch = _all_chairs(prog)
+            match = [ch for ch in all_ch.values()
+                     if args.chair_name.lower() in ch.name.lower()]
+            if not match:
+                print(f"Warning: no chair matching {args.chair_name!r} found in programme")
+                from cpm.models import Chair
+                match = [Chair(chair_id=-1, name=args.chair_name)]
+            new_ch = match[0]
+            replace_chair(prog, args.a, new_ch)
+        elif args.chairs:
+            # Load external chairs file and suggest
+            from cpm.data_prep import load_chairs, load_papers
+            all_chairs = load_chairs(args.chairs)
+            papers = None
+            if getattr(args, "papers", None) and getattr(args, "mapping", None):
+                papers = load_papers(args.papers, _load_mapping(args.mapping))
+            suggestions = suggest_chairs(prog, args.a, all_chairs,
+                                         papers=papers, top_n=10)
+            if not suggestions:
+                print("No eligible unassigned chairs found.")
+                return
+            print(f"Top unassigned chairs for session {args.a}:")
+            for i, (ch, score) in enumerate(suggestions, 1):
+                topics = ", ".join(str(t) for t in ch.topic_ids[:5])
+                print(f"  {i:2}. {ch.name} (id={ch.chair_id}, score={score:.0f}, topics=[{topics}])")
+            pick = input("Pick number to assign (or Enter to cancel): ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(suggestions):
+                replace_chair(prog, args.a, suggestions[int(pick) - 1][0])
+            else:
+                print("Cancelled.")
+                return
+        else:
+            print("Error: provide --chair-name or --chairs CSV for replace-chair")
+            sys.exit(1)
+
+    elif action == "suggest-chairs":
+        print("heyyyyy")
+        if not args.a:
+            print("Error: --a (session) is required for suggest-chairs")
+            sys.exit(1)
+        if not args.chairs:
+            print("Error: --chairs CSV is required for suggest-chairs")
+            sys.exit(1)
+        from cpm.data_prep import load_chairs, load_papers
+        all_chairs = load_chairs(args.chairs)
+        papers = None
+        if getattr(args, "papers", None) and getattr(args, "mapping", None):
+            papers = load_papers(args.papers, _load_mapping(args.mapping))
+        suggestions = suggest_chairs(prog, args.a, all_chairs,
+                                     papers=papers, top_n=10)
+        if not suggestions:
+            print("No eligible unassigned chairs found.")
+            return
+        print(f"Top 10 unassigned chairs for session {args.a}:")
+        for i, (ch, score) in enumerate(suggestions, 1):
+            topics = ", ".join(str(t) for t in ch.topic_ids[:5])
+            print(f"  {i:2}. {ch.name} (id={ch.chair_id}, score={score:.0f}, topics=[{topics}])")
+        return
+
+    else:
+        print(f"Unknown action: {action}")
+        sys.exit(1)
+
+    # Save modified programme
+    out = args.output or args.program
+    _ensure_dir(out)
+    prog.save(out)
+    logger.info("Edited programme saved to %s", out)
+
+
 def cmd_output(args):
     """Render the programme to Markdown, LaTeX, LaTeX folder, mobile HTML, or CMS CSV."""
     from cpm.output import write_cms_csvs, write_program
@@ -564,6 +755,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--papers", help="Paper CSV (for presenter detection)")
     sp.add_argument("--output", default="output/program_chairs.json")
     sp.set_defaults(func=cmd_chairs)
+
+    # ---- edit ----
+    sp = sub.add_parser("edit", help="Manual post-output programme edits")
+    sp.add_argument("action",
+                    choices=["list", "list-slots", "swap", "move", "move-slot",
+                             "merge", "swap-chairs", "replace-chair",
+                             "suggest-chairs", "move-paper", "swap-papers",
+                             "add-paper"],
+                    help="Edit action to perform")
+    sp.add_argument("--program", required=True, help="Programme JSON to edit")
+    sp.add_argument("--a", help="First session/slot ID (or day:index for slots)")
+    sp.add_argument("--b", help="Second session ID (for swap/merge/swap-chairs)")
+    sp.add_argument("--direction", choices=["up", "down"],
+                    help="Direction for move/move-slot/move-paper")
+    sp.add_argument("--presentation-duration", type=int, default=20,
+                    help="Minutes per paper (for move-slot duration calc, default 20)")
+    sp.add_argument("--paper-id", type=int, help="Paper ID (for move-paper/swap-papers/add-paper)")
+    sp.add_argument("--paper-id-b", type=int, help="Second paper ID (for swap-papers)")
+    sp.add_argument("--to-session", help="Target session ID (for move-paper)")
+    sp.add_argument("--title", help="Paper title (for add-paper without CSV)")
+    sp.add_argument("--chair-name", help="Chair name for replace-chair (substring match)")
+    sp.add_argument("--chairs", help="Chairs CSV (for suggest-chairs / replace-chair)")
+    sp.add_argument("--mapping", help="Column-mapping JSON (for topic inference)")
+    sp.add_argument("--papers", help="Paper CSV (for topic inference)")
+    sp.add_argument("--output", default=None,
+                    help="Output JSON (default: overwrite input)")
+    sp.set_defaults(func=cmd_edit)
 
     # ---- output ----
     sp = sub.add_parser("output", help="Render programme to md/latex/latex-folder/mobile/cms-csv")

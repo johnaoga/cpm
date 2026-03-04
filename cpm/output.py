@@ -6,7 +6,7 @@ import csv
 import io
 from pathlib import Path
 
-from .models import Paper, Program, Session, SlotKind, TimeSlot
+from .models import Paper, Program, Session, SlotKind, TimeSlot, build_topic_display_names
 
 
 # ---------------------------------------------------------------------------
@@ -15,6 +15,7 @@ from .models import Paper, Program, Session, SlotKind, TimeSlot
 
 def program_to_markdown(program: Program) -> str:
     """Render the full programme as Markdown."""
+    topic_names = build_topic_display_names(program)
     lines: list[str] = []
     lines.append("# Conference Programme\n")
 
@@ -30,7 +31,12 @@ def program_to_markdown(program: Program) -> str:
                 continue
 
             if ts.kind == SlotKind.PLENARY:
-                lines.append(f"### {ts.start}–{ts.end}  {ts.label} *(reserved)*\n")
+                extra = ""
+                if ts.speaker:
+                    extra += f" — *{ts.speaker}*"
+                if ts.chair:
+                    extra += f" (Chair: {ts.chair})"
+                lines.append(f"### {ts.start}–{ts.end}  {ts.label}{extra} *(reserved)*\n")
                 continue
 
             # Session slot
@@ -38,7 +44,8 @@ def program_to_markdown(program: Program) -> str:
 
             for sess in sessions:
                 room_str = f" — *{sess.room.name}*" if sess.room else ""
-                topic_str = f" [{sess.topic.name}]" if sess.topic else ""
+                tn = topic_names.get(sess.session_id, sess.topic.name if sess.topic else "")
+                topic_str = f" [{tn}]" if tn else ""
                 chair_str = f" (Chair: {sess.chair.name})" if sess.chair else ""
                 lines.append(
                     f"#### {sess.session_id}{topic_str}{room_str}{chair_str}\n"
@@ -98,6 +105,8 @@ def program_to_latex(program: Program) -> str:
     lines.append(r"\end{center}")
     lines.append("")
 
+    topic_names = build_topic_display_names(program)
+
     for day_prog in program.days:
         lines.append(f"\\section*{{Day {day_prog.day}}}")
         lines.append("")
@@ -115,9 +124,14 @@ def program_to_latex(program: Program) -> str:
                 continue
 
             if ts.kind == SlotKind.PLENARY:
+                extra = ""
+                if ts.speaker:
+                    extra += f" -- {_tex_escape(ts.speaker)}"
+                if ts.chair:
+                    extra += f" (Chair: {_tex_escape(ts.chair)})"
                 lines.append(
                     f"\\subsection*{{{ts.start}--{ts.end} \\quad "
-                    f"{_tex_escape(ts.label)} (reserved)}}"
+                    f"{_tex_escape(ts.label)}{extra} (reserved)}}"
                 )
                 lines.append("")
                 continue
@@ -126,8 +140,9 @@ def program_to_latex(program: Program) -> str:
             lines.append("")
 
             for sess in sessions:
+                tn = topic_names.get(sess.session_id, sess.topic.name if sess.topic else "")
                 topic_str = (
-                    f" -- {_tex_escape(sess.topic.name)}" if sess.topic else ""
+                    f" -- {_tex_escape(tn)}" if tn else ""
                 )
                 room_str = (
                     f" \\textit{{{_tex_escape(sess.room.name)}}}" if sess.room else ""
@@ -195,6 +210,7 @@ def program_to_cms_sessions(program: Program, sep: str = ";") -> str:
     Columns: session_id, name, room, topic, chair, day, begin
     (begin is in seconds since midnight).
     """
+    topic_names = build_topic_display_names(program)
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=sep, quoting=csv.QUOTE_ALL)
     writer.writerow(["session_id", "name", "room", "topic", "chair", "day", "begin"])
@@ -203,7 +219,7 @@ def program_to_cms_sessions(program: Program, sep: str = ";") -> str:
         sid = sess.session_id
         name = sid
         room = sess.room.name if sess.room else ""
-        topic = sess.topic.name if sess.topic else ""
+        topic = topic_names.get(sess.session_id, sess.topic.name if sess.topic else "")
         chair = sess.chair.name if sess.chair else ""
         begin = _time_to_seconds(ts.start)
         writer.writerow([sid, name, room, topic, chair, str(day), str(begin)])

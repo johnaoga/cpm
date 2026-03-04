@@ -146,6 +146,8 @@ def _build_day_slots(
                     kind=SlotKind.PLENARY,
                     label=ps.label,
                     day=day,
+                    chair=getattr(ps, "chair", "") or "",
+                    speaker=getattr(ps, "speaker", "") or "",
                 )
                 sid = f"P{day}_{prelim_idx + 1}"
                 sess = Session(

@@ -61,7 +61,136 @@ python main.py output --program output/program_chairs.json --format latex
 python main.py output --program output/program_chairs.json --format latex-folder \
     --latex-config config/latex_config.json --output output/latex
 python main.py output --program output/program_chairs.json --format cms-csv
+
+# 8. Manual edits (post-output tweaks)
+python main.py edit list      --program output/program_chairs.json
+python main.py edit list-slots --program output/program_chairs.json
+python main.py edit move-slot  --program output/program_chairs.json --a P1_3 --direction down
+python main.py edit swap       --program output/program_chairs.json --a TueA01 --b WedM03
+python main.py edit suggest-chairs --program output/program_chairs.json --a TueA01 \
+    --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
 ```
+
+## Manual Programme Editing (`edit`)
+
+After the automated pipeline has produced a programme JSON, the `edit` command allows manual adjustments **without re-running** the solver or checking constraints. All actions operate on the programme JSON in-place (or write to `--output`).
+
+```bash
+python main.py edit <action> --program <programme.json> [options]
+```
+
+### Listing
+
+| Action | Description |
+|---|---|
+| `list` | Show all sessions with day, time, topic, room, chair, and paper count |
+| `list-slots` | Show all slots (plenary, break, session, …) with `day:index` refs |
+
+```bash
+python main.py edit list       --program output/program_chairs.json
+python main.py edit list-slots --program output/program_chairs.json
+```
+
+The `list-slots` output shows a **Ref** column (e.g. `1:3`) that can be used as a slot identifier in other commands.
+
+### Session operations
+
+| Action | Required args | Description |
+|---|---|---|
+| `swap` | `--a`, `--b` | Swap two sessions (positions + rooms) |
+| `move` | `--a`, `--direction` | Move a session up/down to the adjacent SESSION slot |
+| `merge` | `--a`, `--b` | Merge `--b` into `--a` (append papers, remove `--b`) |
+
+```bash
+python main.py edit swap  --program P.json --a TueA01 --b WedM03
+python main.py edit move  --program P.json --a TueA01 --direction up
+python main.py edit merge --program P.json --a TueA01 --b TueA02 --output P_edited.json
+```
+
+### Slot operations
+
+| Action | Required args | Description |
+|---|---|---|
+| `move-slot` | `--a`, `--direction` | Move an entire slot (plenary, break, session block, …) up or down |
+
+Slots are identified by a **session_id** inside the slot (e.g. `P1_3`, `TueA01`) or by the **`day:index`** notation shown in `list-slots` (e.g. `1:3`).
+
+```bash
+python main.py edit move-slot --program P.json --a P1_3       --direction down
+python main.py edit move-slot --program P.json --a 1:3        --direction down
+python main.py edit move-slot --program P.json --a TueA01     --direction up
+```
+
+**Duration handling**: `move-slot` preserves each slot's intrinsic duration and the gaps between slots. The last slot in a day is normally extended to fill the day-end time; when that slot moves away from the last position its duration is computed as `max_papers × presentation_duration_min`. Use `--presentation-duration` to override the default of 20 minutes:
+
+```bash
+python main.py edit move-slot --program P.json --a P1_3 --direction down --presentation-duration 25
+```
+
+### Paper operations
+
+| Action | Required args | Description |
+|---|---|---|
+| `move-paper` | `--paper-id`, `--direction` or `--to-session` | Reorder within session (up/down) or move to another session |
+| `swap-papers` | `--paper-id`, `--paper-id-b` | Swap two papers (even across different sessions) |
+| `add-paper` | `--paper-id`, `--a` | Add a paper to a session (from CSV or by ID + title) |
+
+```bash
+# Reorder within session
+python main.py edit move-paper  --program P.json --paper-id 700 --direction up
+
+# Move paper to a different session
+python main.py edit move-paper  --program P.json --paper-id 700 --to-session TueA05
+
+# Swap two papers (possibly across sessions)
+python main.py edit swap-papers --program P.json --paper-id 700 --paper-id-b 800
+
+# Add a paper to a session (loads full data from CSV)
+python main.py edit add-paper --program P.json --paper-id 999 --a TueA01 \
+    --papers data/papers.csv --mapping config/column_mapping.json
+
+# Add a paper by ID and title only (no CSV needed)
+python main.py edit add-paper --program P.json --paper-id 999 --a TueA01 --title "My New Paper"
+```
+
+If the paper already exists in the programme, `add-paper` moves it (removes from its current session first).
+
+### Chair operations
+
+| Action | Required args | Description |
+|---|---|---|
+| `swap-chairs` | `--a`, `--b` | Swap chair assignments between two sessions |
+| `replace-chair` | `--a`, `--chair-name` or `--chairs` | Replace a session's chair by name or from suggestions |
+| `suggest-chairs` | `--a`, `--chairs` | Show top 10 unassigned chairs ranked by topic affinity |
+
+```bash
+# Swap chairs between two sessions
+python main.py edit swap-chairs --program P.json --a TueA01 --b TueA02
+
+# Replace by name substring
+python main.py edit replace-chair --program P.json --a TueA01 --chair-name "Doe"
+
+# Interactive: pick from top 10 unassigned chairs
+python main.py edit replace-chair --program P.json --a TueA01 \
+    --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
+
+# Just view suggestions (no change)
+python main.py edit suggest-chairs --program P.json --a TueA01 \
+    --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
+```
+
+When `--papers` and `--mapping` are provided, chair topic affinity is inferred from paper author data, giving much better ranking. Without them, only pre-existing `topic_ids` from the chairs CSV are used.
+
+### Common options
+
+| Option | Description |
+|---|---|
+| `--output FILE` | Write result to FILE instead of overwriting the input |
+| `--presentation-duration N` | Minutes per paper for `move-slot` duration calc (default 20) |
+| `--to-session ID` | Target session for `move-paper` (move paper to a different session) |
+| `--title TEXT` | Paper title for `add-paper` when no CSV is provided |
+| `--papers CSV` | Paper CSV (for `add-paper` full data, or `suggest-chairs` topic inference) |
+| `--mapping JSON` | Column-mapping JSON (used with `--papers`) |
 
 ## Project Structure
 
@@ -76,8 +205,10 @@ cpm/
 │   ├── assign_papers.py          # Paper assignment via OR-Tools CP-SAT (with capacity check)
 │   ├── assign_rooms.py           # Room assignment: capacity + topic popularity
 │   ├── assign_chairs.py          # Chair assignment: availability, presenter, topic matching
+│   ├── edit_program.py           # Manual post-output programme editing operations
 │   ├── output.py                 # Markdown, LaTeX, and CMS CSV rendering
-│   └── output_latex.py           # Full LaTeX project folder generation (boa-style)
+│   ├── output_latex.py           # Full LaTeX project folder generation (boa-style)
+│   └── output_mobile.py          # Mobile-friendly HTML output
 ├── examples/
 │   └── base/                     # Self-contained example (10 papers, 5 topics)
 │       ├── config/               # schedule_config, column_mapping, latex_config
