@@ -293,6 +293,8 @@ def cmd_edit(args):
     """Manual post-output programme edits."""
     from cpm.edit_program import (
         add_paper,
+        add_session,
+        add_slot,
         list_sessions,
         list_slots,
         merge_sessions,
@@ -300,6 +302,8 @@ def cmd_edit(args):
         move_session,
         move_slot,
         replace_chair,
+        resize_slot,
+        shift_slot,
         suggest_chairs,
         swap_chairs,
         swap_papers,
@@ -389,6 +393,57 @@ def cmd_edit(args):
             title = getattr(args, "title", None) or f"Paper {args.paper_id}"
             paper_obj = PaperModel(paper_id=args.paper_id, title=title)
         add_paper(prog, args.a, paper_obj)
+
+    elif action == "add-slot":
+        day_num = getattr(args, "day", None)
+        pos = getattr(args, "position", None)
+        kind = getattr(args, "kind", None)
+        dur = getattr(args, "duration", None)
+        if day_num is None or pos is None or kind is None or dur is None:
+            print("Error: --day, --position, --kind, --duration are required for add-slot")
+            sys.exit(1)
+        slot_label = getattr(args, "label", "") or ""
+        slot_gap = getattr(args, "gap", 15) or 15
+        sid = getattr(args, "session_id", None)
+        add_slot(prog, day_num, pos, kind, dur, label=slot_label,
+                 gap=slot_gap, session_id=sid)
+
+    elif action == "add-session":
+        if not args.a:
+            print("Error: --a (slot ref) is required for add-session")
+            sys.exit(1)
+        sid = getattr(args, "session_id", None)
+        if not sid:
+            print("Error: --session-id is required for add-session")
+            sys.exit(1)
+        slot_label = getattr(args, "label", "") or ""
+        add_session(prog, args.a, sid, label=slot_label)
+
+    elif action == "shift-slot":
+        if not args.a:
+            print("Error: --a (slot ref) is required for shift-slot")
+            sys.exit(1)
+        mins = getattr(args, "minutes", None)
+        if mins is None:
+            print("Error: --minutes is required for shift-slot")
+            sys.exit(1)
+        slot_gap = getattr(args, "gap", 15) or 15
+        no_adj = getattr(args, "no_adjust", False)
+        shift_slot(prog, args.a, mins, gap=slot_gap, adjust_following=not no_adj)
+
+    elif action == "resize-slot":
+        if not args.a:
+            print("Error: --a (slot ref) is required for resize-slot")
+            sys.exit(1)
+        dur = getattr(args, "duration", None)
+        dlt = getattr(args, "delta", None)
+        if dur is None and dlt is None:
+            print("Error: --duration or --delta is required for resize-slot")
+            sys.exit(1)
+        adj_papers = getattr(args, "adjust_papers", False)
+        slot_gap = getattr(args, "gap", 15) or 15
+        resize_slot(prog, args.a, duration=dur, delta=dlt,
+                    adjust_papers=adj_papers, gap=slot_gap)
 
     elif action == "merge":
         if not args.a or not args.b:
@@ -666,6 +721,7 @@ def cmd_generate(args):
         generate_latex_folder(
             prog, latex_dir, latex_config=latex_cfg, papers=papers,
             abstract_pdf_template=abs_tpl,
+            presentation_duration_min=cfg.presentation_duration_min,
         )
         logger.info("Done. Programme → %s, LaTeX folder → %s", prog_out, latex_dir)
     elif fmt == "mobile":
@@ -758,7 +814,8 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["list", "list-slots", "swap", "move", "move-slot",
                              "merge", "swap-chairs", "replace-chair",
                              "suggest-chairs", "move-paper", "swap-papers",
-                             "add-paper"],
+                             "add-paper", "add-slot", "add-session",
+                             "shift-slot", "resize-slot"],
                     help="Edit action to perform")
     sp.add_argument("--program", required=True, help="Programme JSON to edit")
     sp.add_argument("--a", help="First session/slot ID (or day:index for slots)")
@@ -775,6 +832,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--chairs", help="Chairs CSV (for suggest-chairs / replace-chair)")
     sp.add_argument("--mapping", help="Column-mapping JSON (for topic inference)")
     sp.add_argument("--papers", help="Paper CSV (for topic inference)")
+    sp.add_argument("--day", type=int, help="Day number (for add-slot)")
+    sp.add_argument("--position", type=int, help="Slot index to insert at (for add-slot)")
+    sp.add_argument("--kind", choices=["session", "lunch", "break", "plenary", "dinner"],
+                    help="Slot kind (for add-slot)")
+    sp.add_argument("--duration", type=int, help="Duration in minutes (for add-slot/resize-slot)")
+    sp.add_argument("--label", help="Label for new slot/session")
+    sp.add_argument("--gap", type=int, default=15,
+                    help="Gap in minutes between slots (default 15)")
+    sp.add_argument("--session-id", help="Session ID (for add-slot/add-session)")
+    sp.add_argument("--minutes", type=int, help="Shift amount in minutes (for shift-slot, +/-)")
+    sp.add_argument("--delta", type=int, help="Duration change in minutes (for resize-slot, +/-)")
+    sp.add_argument("--adjust-papers", action="store_true",
+                    help="Recalculate presentation durations (for resize-slot)")
+    sp.add_argument("--no-adjust", action="store_true",
+                    help="Do not adjust following slots (for shift-slot)")
     sp.add_argument("--output", default=None,
                     help="Output JSON (default: overwrite input)")
     sp.set_defaults(func=cmd_edit)

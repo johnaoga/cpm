@@ -14,6 +14,7 @@ from typing import Optional
 
 from .models import (
     Chair,
+    DayProgram,
     Paper,
     Program,
     Session,
@@ -501,6 +502,346 @@ def list_sessions(program: Program) -> list[dict]:
             "papers": len(sess.papers),
         })
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Reflow helper: recompute all slot times on a day from durations + gaps
+# ---------------------------------------------------------------------------
+
+def _reflow_day(dp: DayProgram, day_end: int | None = None) -> None:
+    """Recompute start/end for every slot on *dp* using existing durations
+    and the gaps between them.  The first slot keeps its start.
+    If *day_end* is given, the last slot is extended to at least that time.
+    """
+    n = len(dp.slots)
+    if n == 0:
+        return
+    cursor = _parse_hhmm(dp.slots[0]["time_slot"].start)
+    for i, slot in enumerate(dp.slots):
+        ts: TimeSlot = slot["time_slot"]
+        dur = _slot_duration_min(ts)
+        ts.start = _format_hhmm(cursor)
+        if i == n - 1 and day_end is not None:
+            ts.end = _format_hhmm(max(cursor + dur, day_end))
+        else:
+            ts.end = _format_hhmm(cursor + dur)
+        if i < n - 1:
+            next_ts = dp.slots[i + 1]["time_slot"]
+            gap = max(_parse_hhmm(next_ts.start) - _parse_hhmm(ts.end), 0)
+            # gap is whatever was *originally* there; but after reflowing
+            # we recompute the cursor from the new end
+            cursor = cursor + dur + gap
+
+
+def _reflow_day_from(dp: DayProgram, from_idx: int, gap_before: int,
+                     day_end: int | None = None) -> None:
+    """Reflow slots starting at *from_idx*, adding *gap_before* minutes
+    before slot ``from_idx``.  Slots before ``from_idx`` are untouched.
+    Gaps between subsequent slots are preserved from the current layout.
+    """
+    n = len(dp.slots)
+    if from_idx >= n:
+        return
+
+    # Snapshot durations and gaps *before* we start rewriting
+    durations = [_slot_duration_min(dp.slots[i]["time_slot"]) for i in range(n)]
+    gaps = []
+    for i in range(from_idx, n - 1):
+        end_i = _parse_hhmm(dp.slots[i]["time_slot"].end)
+        start_next = _parse_hhmm(dp.slots[i + 1]["time_slot"].start)
+        gaps.append(max(start_next - end_i, 0))
+
+    # Cursor starts after the previous slot + requested gap
+    if from_idx > 0:
+        prev_end = _parse_hhmm(dp.slots[from_idx - 1]["time_slot"].end)
+        cursor = prev_end + gap_before
+    else:
+        cursor = _parse_hhmm(dp.slots[0]["time_slot"].start)
+
+    for j, i in enumerate(range(from_idx, n)):
+        ts: TimeSlot = dp.slots[i]["time_slot"]
+        dur = durations[i]
+        ts.start = _format_hhmm(cursor)
+        if i == n - 1 and day_end is not None:
+            ts.end = _format_hhmm(max(cursor + dur, day_end))
+        else:
+            ts.end = _format_hhmm(cursor + dur)
+        cursor += dur
+        if j < len(gaps):
+            cursor += gaps[j]
+
+
+# ---------------------------------------------------------------------------
+# Add a new slot (session / lunch / break / plenary)
+# ---------------------------------------------------------------------------
+
+_SLOT_KIND_MAP = {
+    "session": SlotKind.SESSION,
+    "lunch": SlotKind.LUNCH,
+    "break": SlotKind.BREAK,
+    "plenary": SlotKind.PLENARY,
+    "dinner": SlotKind.DINNER,
+}
+
+
+def add_slot(
+    program: Program,
+    day: int,
+    position: int,
+    kind: str,
+    duration: int,
+    label: str = "",
+    gap: int = 15,
+    session_id: str | None = None,
+) -> Program:
+    """Insert a new slot into *day* at *position* (0-based index).
+
+    Parameters
+    ----------
+    day : int
+        Day number (1-based).
+    position : int
+        Index at which the new slot is inserted.  Use ``-1`` to append.
+    kind : str
+        One of ``session``, ``lunch``, ``break``, ``plenary``, ``dinner``.
+    duration : int
+        Slot duration in minutes.
+    label : str
+        Label for the slot (e.g. ``"Lunch"``).
+    gap : int
+        Gap in minutes before the next slot (default 15).
+    session_id : str or None
+        Session ID for a new session slot.  Auto-generated if not given.
+    """
+    slot_kind = _SLOT_KIND_MAP.get(kind)
+    if slot_kind is None:
+        raise ValueError(f"Unknown slot kind {kind!r}; use one of {list(_SLOT_KIND_MAP)}")
+
+    # Find the day
+    dp = None
+    for d in program.days:
+        if d.day == day:
+            dp = d
+            break
+    if dp is None:
+        raise ValueError(f"Day {day} not found in programme")
+
+    n = len(dp.slots)
+    if position < 0 or position > n:
+        position = n  # append
+
+    # Determine start time
+    if position == 0:
+        start_min = _parse_hhmm(dp.slots[0]["time_slot"].start) if n > 0 else 9 * 60
+    elif position <= n - 1:
+        prev_end = _parse_hhmm(dp.slots[position - 1]["time_slot"].end)
+        start_min = prev_end + gap
+    else:
+        prev_end = _parse_hhmm(dp.slots[-1]["time_slot"].end) if n > 0 else 9 * 60
+        start_min = prev_end + gap
+
+    ts = TimeSlot(
+        start=_format_hhmm(start_min),
+        end=_format_hhmm(start_min + duration),
+        kind=slot_kind,
+        label=label,
+        day=day,
+    )
+
+    new_slot: dict = {"time_slot": ts, "sessions": []}
+
+    # For SESSION kind, create a default empty session
+    if slot_kind == SlotKind.SESSION:
+        sid = session_id or f"S{day}_{position:02d}"
+        sess = Session(session_id=sid, day=day, time_slot=ts)
+        new_slot["sessions"] = [sess]
+
+    # For PLENARY kind, create a plenary session
+    if slot_kind == SlotKind.PLENARY:
+        sid = session_id or f"P{day}_{position}"
+        sess = Session(session_id=sid, day=day, time_slot=ts, label=label)
+        new_slot["sessions"] = [sess]
+
+    dp.slots.insert(position, new_slot)
+
+    # Shift subsequent slots down
+    day_end = _parse_hhmm(dp.slots[-1]["time_slot"].end) if len(dp.slots) > 1 else None
+    if position < len(dp.slots) - 1:
+        _reflow_day_from(dp, position + 1, gap, day_end=day_end)
+
+    _recalc_timeslots(program)
+    logger.info("Added %s slot '%s' at day %d position %d (%s–%s)",
+                kind, label, day, position, ts.start, ts.end)
+    return program
+
+
+# ---------------------------------------------------------------------------
+# Add a session to an existing slot
+# ---------------------------------------------------------------------------
+
+def add_session(
+    program: Program,
+    slot_ref: str,
+    session_id: str,
+    label: str = "",
+) -> Program:
+    """Add a new empty session to an existing slot.
+
+    *slot_ref* identifies the slot (``"day:index"`` or session_id).
+    """
+    loc = _parse_slot_ref(program, slot_ref)
+    if loc is None:
+        raise ValueError(f"Slot {slot_ref!r} not found")
+    day_idx, slot_idx = loc
+    dp = program.days[day_idx]
+    slot = dp.slots[slot_idx]
+    ts: TimeSlot = slot["time_slot"]
+
+    sess = Session(
+        session_id=session_id,
+        day=dp.day,
+        time_slot=TimeSlot(
+            start=ts.start, end=ts.end, kind=ts.kind,
+            label=ts.label, day=ts.day,
+        ),
+        label=label,
+    )
+    slot["sessions"].append(sess)
+    logger.info("Added session %s to slot %s (day %d, %s–%s)",
+                session_id, slot_ref, dp.day, ts.start, ts.end)
+    return program
+
+
+# ---------------------------------------------------------------------------
+# Shift a slot in time (move start by ±N minutes, adjust subsequent)
+# ---------------------------------------------------------------------------
+
+def shift_slot(
+    program: Program,
+    slot_ref: str,
+    minutes: int,
+    gap: int = 15,
+    adjust_following: bool = True,
+) -> Program:
+    """Shift slot *slot_ref* by *minutes* (positive = later, negative = earlier).
+
+    If *adjust_following* is True (default), all subsequent slots on the
+    same day are adjusted to maintain the gap.  When False, only the
+    targeted slot is moved.
+    """
+    loc = _parse_slot_ref(program, slot_ref)
+    if loc is None:
+        raise ValueError(f"Slot {slot_ref!r} not found")
+    day_idx, slot_idx = loc
+    dp = program.days[day_idx]
+
+    ts: TimeSlot = dp.slots[slot_idx]["time_slot"]
+    dur = _slot_duration_min(ts)
+    old_start = _parse_hhmm(ts.start)
+    new_start = old_start + minutes
+
+    if new_start < 0:
+        raise ValueError("Shift would move slot before midnight")
+
+    # Check we don't overlap previous slot
+    if slot_idx > 0:
+        prev_end = _parse_hhmm(dp.slots[slot_idx - 1]["time_slot"].end)
+        if new_start < prev_end:
+            raise ValueError(
+                f"Shift would overlap with previous slot (ends at "
+                f"{_format_hhmm(prev_end)})"
+            )
+
+    ts.start = _format_hhmm(new_start)
+    ts.end = _format_hhmm(new_start + dur)
+
+    # Reflow subsequent slots (unless disabled)
+    if adjust_following:
+        n = len(dp.slots)
+        if slot_idx < n - 1:
+            day_end = _parse_hhmm(dp.slots[-1]["time_slot"].end)
+            _reflow_day_from(dp, slot_idx + 1, gap, day_end=day_end)
+
+    _recalc_timeslots(program)
+    direction = "later" if minutes > 0 else "earlier"
+    logger.info("Shifted slot %s by %+d min (%s) → %s–%s",
+                slot_ref, minutes, direction, ts.start, ts.end)
+    return program
+
+
+# ---------------------------------------------------------------------------
+# Resize a slot (shrink / extend duration)
+# ---------------------------------------------------------------------------
+
+def resize_slot(
+    program: Program,
+    slot_ref: str,
+    duration: int | None = None,
+    delta: int | None = None,
+    adjust_papers: bool = False,
+    gap: int = 15,
+) -> Program:
+    """Change the duration of slot *slot_ref*.
+
+    Parameters
+    ----------
+    duration : int or None
+        New absolute duration in minutes.
+    delta : int or None
+        Relative change in minutes (positive = extend, negative = shrink).
+        Exactly one of *duration* or *delta* must be given.
+    adjust_papers : bool
+        If True, recalculate presentation_duration_min for sessions in this
+        slot based on the new duration and number of papers.
+    gap : int
+        Gap in minutes before the next slot (default 15).
+    """
+    if duration is None and delta is None:
+        raise ValueError("Provide --duration or --delta for resize-slot")
+    if duration is not None and delta is not None:
+        raise ValueError("Provide --duration or --delta, not both")
+
+    loc = _parse_slot_ref(program, slot_ref)
+    if loc is None:
+        raise ValueError(f"Slot {slot_ref!r} not found")
+    day_idx, slot_idx = loc
+    dp = program.days[day_idx]
+    ts: TimeSlot = dp.slots[slot_idx]["time_slot"]
+    old_dur = _slot_duration_min(ts)
+
+    if duration is not None:
+        new_dur = duration
+    else:
+        new_dur = old_dur + delta
+    if new_dur <= 0:
+        raise ValueError(f"Resulting duration {new_dur} min is not positive")
+
+    start_min = _parse_hhmm(ts.start)
+    ts.end = _format_hhmm(start_min + new_dur)
+
+    # Optionally adjust paper presentation durations
+    if adjust_papers:
+        slot = dp.slots[slot_idx]
+        for sess in slot.get("sessions", []):
+            np = len(sess.papers)
+            if np > 0:
+                pres_dur = new_dur // np
+                # Store in session metadata (or paper extra) for reference
+                logger.info(
+                    "  Session %s: %d papers × %d min = %d min",
+                    sess.session_id, np, pres_dur, np * pres_dur,
+                )
+
+    # Reflow subsequent slots
+    n = len(dp.slots)
+    if slot_idx < n - 1:
+        day_end = _parse_hhmm(dp.slots[-1]["time_slot"].end)
+        _reflow_day_from(dp, slot_idx + 1, gap, day_end=day_end)
+
+    _recalc_timeslots(program)
+    logger.info("Resized slot %s: %d min → %d min (%s–%s)",
+                slot_ref, old_dur, new_dur, ts.start, ts.end)
+    return program
 
 
 # ---------------------------------------------------------------------------

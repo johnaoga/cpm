@@ -355,7 +355,7 @@ pdfkeywords={{}}, pdfcreator={{\\LaTeX}}, colorlinks=true}}
 %% -- FRONT -- %%
 \\input{{front}}
 \\cleardoublepage \\mbox{{}} \\vspace*{{6cm}}
-{comments_block}
+
 %% -- PROGRAM -- %%
 \\begin{{center}}
 \\Huge\\textbf{{Part 1\\\\[2ex] Programmatic Table of Contents}}
@@ -374,7 +374,12 @@ pdfkeywords={{}}, pdfcreator={{\\LaTeX}}, colorlinks=true}}
 
 \\putplen{{Part 2: \\ \\ List of Participants}}{{Alphabetical list}}{{P:4}}
 
+\\putplen{{Part 3: \\ \\ Organizational Comments}}{{Comments, overview program, map}}{{P:5}}
+
 \\nopagebreak \\vfill
+%% -- END PROGRAM -- %%
+
+{abstracts_block}
 
 %% -- PARTICIPANTS -- %%
 \\onecolumn \\cleardoublepage \\mbox{{}} \\vspace*{{6cm}}
@@ -385,7 +390,13 @@ pdfkeywords={{}}, pdfcreator={{\\LaTeX}}, colorlinks=true}}
 
 \\input{{participants}}
 \\nopagebreak \\vfill
-{abstracts_block}
+
+\\newpage
+
+%% -- END OF PARTICIPANTS -- %%
+
+{comments_block}
+
 \\end{{document}}
 """
 
@@ -445,9 +456,14 @@ def _gen_program_tex(program: Program, lcfg: LaTeXConfig, day_file_map: dict[int
                     room_name = sessions[0].room.name
                 speaker = _esc(ts.speaker) if ts.speaker else ""
                 chair_str = f"{_esc(ts.chair)}" if ts.chair else ""
+                plenary_name = lcfg.extra.get("plenary_name", "Plenary")
+                label = ts.label or ""
+                trunc = lcfg.extra.get("truncate_plenary_title")
+                if trunc and isinstance(trunc, int) and len(label) > trunc:
+                    label = label[:trunc] + "..."
                 lines.append(
-                    f"\\pleheading{{Plenary}}{{{_esc(room_name)}}}"
-                    f"{{{_esc(ts.label)}}}{{{speaker}}}"
+                    f"\\pleheading{{{_esc(plenary_name)}}}{{{_esc(room_name)}}}"
+                    f"{{{_esc(label)}}}{{{speaker}}}"
                     f"{{{chair_str}}}{{{ts.start}--{ts.end}}}"
                 )
                 lines.append("")
@@ -511,7 +527,27 @@ def _gen_day_period_tex(
                 room_name = sess.room.name if sess.room else ""
                 topic_name = topic_names.get(sess.session_id, sess.topic.name if sess.topic else "")
                 chair_name = sess.chair.name if sess.chair else ""
-                time_range = f"{ts.start}-{ts.end}"
+
+                exact_pres = lcfg.extra.get("exact_presentation_timing", False)
+                exact_sess = lcfg.extra.get("exact_session_timing", False)
+                cfg_pres_dur = lcfg.extra.get("presentation_duration_min", 20)
+
+                if exact_pres:
+                    pres_dur = cfg_pres_dur
+                else:
+                    pres_dur = 20
+                    try:
+                        if len(sess.papers) > 0 and ts.duration_minutes > 0:
+                            pres_dur = ts.duration_minutes // len(sess.papers)
+                    except Exception:
+                        pass
+
+                # Compute session time range
+                if exact_sess and sess.papers:
+                    exact_end_min = _time_to_min(ts.start) + len(sess.papers) * pres_dur
+                    time_range = f"{ts.start}-{_fmt_min(exact_end_min).replace('.', ':')}"
+                else:
+                    time_range = f"{ts.start}-{ts.end}"
 
                 lines.append(
                     f"\\sesheading{{{_esc(sess.session_id)}}}{{{_esc(room_name)}}}"
@@ -524,13 +560,6 @@ def _gen_day_period_tex(
 
                 if not sess.papers:
                     continue
-
-                pres_dur = 20  # default
-                try:
-                    if len(sess.papers) > 0 and ts.duration_minutes > 0:
-                        pres_dur = ts.duration_minutes // len(sess.papers)
-                except Exception:
-                    pass
 
                 for idx, paper in enumerate(sess.papers):
                     start_min = _time_to_min(ts.start) + idx * pres_dur
@@ -719,6 +748,9 @@ def _gen_comments(program: Program, lcfg: LaTeXConfig) -> str:
 
             if kind == SlotKind.PLENARY:
                 label = ts.label or "Plenary"
+                trunc = lcfg.extra.get("truncate_plenary_title")
+                if trunc and isinstance(trunc, int) and len(label) > trunc:
+                    label = label[:trunc] + "..."
                 # Room from session if available
                 room_name = ""
                 if sessions and hasattr(sessions[0], "room") and sessions[0].room:
@@ -734,22 +766,29 @@ def _gen_comments(program: Program, lcfg: LaTeXConfig) -> str:
                     lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{\\emph{{{_esc(label)}}}}} & \\\\ \\hline")
 
             elif kind in (SlotKind.BREAK, SlotKind.ROOM_CHANGE):
-                mc = n_cols
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
-                lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{Coffee Break}} & \\\\")
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
+                show_breaks = lcfg.extra.get("comment_show_breaks", True)
+                if show_breaks:
+                    mc = n_cols
+                    label = ts.label or "Coffee Break"
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
+                    lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{{_esc(label)}}} & \\\\")
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
 
             elif kind == SlotKind.LUNCH:
-                mc = n_cols
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
-                lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{Lunch}} & \\\\")
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
+                show_breaks = lcfg.extra.get("comment_show_breaks", True)
+                if show_breaks:
+                    mc = n_cols
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
+                    lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{Lunch}} & \\\\")
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
 
             elif kind == SlotKind.DINNER:
-                mc = n_cols
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
-                lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{Dinner}} & \\\\")
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
+                show_breaks = lcfg.extra.get("comment_show_breaks", True)
+                if show_breaks:
+                    mc = n_cols
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\")
+                    lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{Dinner}} & \\\\")
+                    lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{}} & \\\\ \\hline")
 
             elif kind == SlotKind.SESSION:
                 # Session header row: Room names
@@ -777,15 +816,33 @@ def _gen_comments(program: Program, lcfg: LaTeXConfig) -> str:
                 lines.append(f"{_esc(period_label)} & {sid_row} & \\\\")
                 lines.append(f"    & {topic_row} & \\\\ \\hline")
 
+                # Show chairs row if configured
+                show_chairs = lcfg.extra.get("comment_show_chairs", True)
+                if show_chairs:
+                    chair_cells = []
+                    for sess in sessions:
+                        cn = _esc(sess.chair.name) if sess.chair else ""
+                        chair_cells.append(cn)
+                    while len(chair_cells) < n_cols:
+                        chair_cells.append("")
+                    chair_row = " & ".join(chair_cells)
+                    lines.append(f"Chair & {chair_row} & \\\\ \\hline")
+
                 # Paper rows: one row per presentation time slot
                 if sessions:
                     max_papers = max(len(s.papers) for s in sessions) if sessions else 0
-                    pres_dur = 20
-                    try:
-                        if max_papers > 0 and ts.duration_minutes > 0:
-                            pres_dur = ts.duration_minutes // max_papers
-                    except Exception:
-                        pass
+                    exact_pres = lcfg.extra.get("exact_presentation_timing", False)
+                    cfg_pres_dur = lcfg.extra.get("presentation_duration_min", 20)
+
+                    if exact_pres:
+                        pres_dur = cfg_pres_dur
+                    else:
+                        pres_dur = 20
+                        try:
+                            if max_papers > 0 and ts.duration_minutes > 0:
+                                pres_dur = ts.duration_minutes // max_papers
+                        except Exception:
+                            pass
 
                     for pidx in range(max_papers):
                         start_min = _time_to_min(ts.start) + pidx * pres_dur
@@ -833,6 +890,7 @@ def generate_latex_folder(
     papers: list | None = None,
     config_dir: str | Path | None = None,
     abstract_pdf_template: str | None = None,
+    presentation_duration_min: int | None = None,
 ) -> Path:
     """Generate a full LaTeX project folder from *program*.
 
@@ -852,6 +910,10 @@ def generate_latex_folder(
     abstract_pdf_template : str | None
         Path template for abstract PDFs, e.g. ``"pdf/conf_<id>.pdf"``.
         When set, ``abstracts.tex`` is generated.
+    presentation_duration_min : int | None
+        Per-paper presentation duration in minutes.  When provided, it is
+        stored in ``latex_config.extra["presentation_duration_min"]`` so
+        the generators can use it for exact timing calculations.
 
     Returns
     -------
@@ -874,6 +936,10 @@ def generate_latex_folder(
         lcfg = latex_config
     if config_dir is not None:
         cfg_dir = Path(config_dir)
+
+    # Inject presentation_duration_min into extra if provided
+    if presentation_duration_min is not None:
+        lcfg.extra.setdefault("presentation_duration_min", presentation_duration_min)
 
     # Determine day file base names (e.g. "day1_tuesday")
     day_file_map: dict[int, str] = {}

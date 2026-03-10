@@ -5,15 +5,31 @@ Generate structured conference programmes from paper submission data, topic pref
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install conf-program-manager
 ```
+
+For SBERT-based paper–topic similarity scoring:
+
+```bash
+pip install conf-program-manager[similarity]
+```
+
+**Development install** (editable, from a local clone):
+
+```bash
+git clone https://github.com/johnaoga/cpm.git
+cd cpm
+pip install -e ".[similarity,dev]"
+```
+
+After installation the `cpm` command is available globally.
 
 ## Quick Start
 
 A self-contained example is provided in `examples/base/`. Run the full pipeline with:
 
 ```bash
-python main.py generate \
+cpm generate \
     --config examples/base/config/schedule_config.json \
     --mapping examples/base/config/column_mapping.json \
     --papers  examples/base/data/example_papers.csv \
@@ -25,49 +41,51 @@ python main.py generate \
 
 ```bash
 # 1. Generate a skeleton programme
-python main.py dummy --config config/schedule_config.json
+cpm dummy --config config/schedule_config.json
 
 # 2. Manage constraints
-python main.py constraints --config config/schedule_config.json list
-python main.py constraints --config config/schedule_config.json add --text "paper_42 = day_1"
+cpm constraints --config config/schedule_config.json list
+cpm constraints --config config/schedule_config.json add --text "paper_42 = day_1"
 
 # 2b. Interactively review paper comments and add constraints
-python main.py constraints --config config/schedule_config.json review \
+cpm constraints --config config/schedule_config.json review \
     --mapping config/column_mapping.json --papers data/papers.csv --topics data/topics.csv
 
 # 3. (Optional) Compute SBERT similarity scores
-python main.py similarity --mapping config/column_mapping.json \
+cpm similarity --mapping config/column_mapping.json \
     --papers data/papers.csv --topics data/topics.csv --all
 
 # 4. Assign papers to sessions
-python main.py papers --config config/schedule_config.json \
+cpm papers --config config/schedule_config.json \
     --mapping config/column_mapping.json \
     --papers data/papers.csv --topics data/topics.csv \
     --program output/dummy_program.json
 
-# 5. Assign rooms (with optional rooms.csv for capacity-based assignment)
-python main.py rooms --config config/schedule_config.json \
+# 5. Assign rooms
+cpm rooms --config config/schedule_config.json \
     --program output/program_papers.json \
     --rooms data/rooms.csv --mapping config/column_mapping.json --papers data/papers.csv
 
-# 6. Assign chairs (with optional chairs.csv for availability/topic-aware assignment)
-python main.py chairs --config config/schedule_config.json \
+# 6. Assign chairs
+cpm chairs --config config/schedule_config.json \
     --program output/program_rooms.json \
     --chairs data/chairs.csv --mapping config/column_mapping.json --papers data/papers.csv
 
 # 7. Render output
-python main.py output --program output/program_chairs.json --format md
-python main.py output --program output/program_chairs.json --format latex
-python main.py output --program output/program_chairs.json --format latex-folder \
+cpm output --program output/program_chairs.json --format md
+cpm output --program output/program_chairs.json --format latex
+cpm output --program output/program_chairs.json --format latex-folder \
     --latex-config config/latex_config.json --output output/latex
-python main.py output --program output/program_chairs.json --format cms-csv
+cpm output --program output/program_chairs.json --format cms-csv
 
 # 8. Manual edits (post-output tweaks)
-python main.py edit list      --program output/program_chairs.json
-python main.py edit list-slots --program output/program_chairs.json
-python main.py edit move-slot  --program output/program_chairs.json --a P1_3 --direction down
-python main.py edit swap       --program output/program_chairs.json --a TueA01 --b WedM03
-python main.py edit suggest-chairs --program output/program_chairs.json --a TueA01 \
+cpm edit list      --program output/program_chairs.json
+cpm edit list-slots --program output/program_chairs.json
+cpm edit move-slot  --program output/program_chairs.json --a 1:3 --direction down
+cpm edit swap       --program output/program_chairs.json --a S01 --b S05
+cpm edit add-slot   --program output/program_chairs.json --day 1 --position 3 \
+    --kind break --duration 30 --label "Coffee Break"
+cpm edit suggest-chairs --program output/program_chairs.json --a S01 \
     --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
 ```
 
@@ -76,7 +94,7 @@ python main.py edit suggest-chairs --program output/program_chairs.json --a TueA
 After the automated pipeline has produced a programme JSON, the `edit` command allows manual adjustments **without re-running** the solver or checking constraints. All actions operate on the programme JSON in-place (or write to `--output`).
 
 ```bash
-python main.py edit <action> --program <programme.json> [options]
+cpm edit <action> --program <programme.json> [options]
 ```
 
 ### Listing
@@ -87,8 +105,8 @@ python main.py edit <action> --program <programme.json> [options]
 | `list-slots` | Show all slots (plenary, break, session, …) with `day:index` refs |
 
 ```bash
-python main.py edit list       --program output/program_chairs.json
-python main.py edit list-slots --program output/program_chairs.json
+cpm edit list       --program P.json
+cpm edit list-slots --program P.json
 ```
 
 The `list-slots` output shows a **Ref** column (e.g. `1:3`) that can be used as a slot identifier in other commands.
@@ -100,32 +118,67 @@ The `list-slots` output shows a **Ref** column (e.g. `1:3`) that can be used as 
 | `swap` | `--a`, `--b` | Swap two sessions (positions + rooms) |
 | `move` | `--a`, `--direction` | Move a session up/down to the adjacent SESSION slot |
 | `merge` | `--a`, `--b` | Merge `--b` into `--a` (append papers, remove `--b`) |
+| `add-session` | `--a`, `--session-id` | Add a new empty session to an existing slot |
 
 ```bash
-python main.py edit swap  --program P.json --a TueA01 --b WedM03
-python main.py edit move  --program P.json --a TueA01 --direction up
-python main.py edit merge --program P.json --a TueA01 --b TueA02 --output P_edited.json
+cpm edit swap  --program P.json --a S01 --b S05
+cpm edit move  --program P.json --a S01 --direction up
+cpm edit merge --program P.json --a S01 --b S02 --output P_edited.json
+
+# Add a session to an existing slot (--a is the slot ref)
+cpm edit add-session --program P.json --a 1:4 --session-id S15
+cpm edit add-session --program P.json --a 1:4 --session-id S15 --label "Late Posters"
 ```
 
 ### Slot operations
 
 | Action | Required args | Description |
 |---|---|---|
-| `move-slot` | `--a`, `--direction` | Move an entire slot (plenary, break, session block, …) up or down |
+| `move-slot` | `--a`, `--direction` | Swap an entire slot with its neighbour (preserves durations and gaps) |
+| `add-slot` | `--day`, `--position`, `--kind`, `--duration` | Insert a new slot; subsequent slots shift down |
+| `shift-slot` | `--a`, `--minutes` | Shift a slot earlier/later by N minutes; subsequent slots adjust |
+| `resize-slot` | `--a`, `--duration` or `--delta` | Change a slot's duration; subsequent slots adjust |
 
-Slots are identified by a **session_id** inside the slot (e.g. `P1_3`, `TueA01`) or by the **`day:index`** notation shown in `list-slots` (e.g. `1:3`).
-
-```bash
-python main.py edit move-slot --program P.json --a P1_3       --direction down
-python main.py edit move-slot --program P.json --a 1:3        --direction down
-python main.py edit move-slot --program P.json --a TueA01     --direction up
-```
-
-**Duration handling**: `move-slot` preserves each slot's intrinsic duration and the gaps between slots. The last slot in a day is normally extended to fill the day-end time; when that slot moves away from the last position its duration is computed as `max_papers × presentation_duration_min`. Use `--presentation-duration` to override the default of 20 minutes:
+Slots are identified by a **session_id** inside the slot (e.g. `P1_3`, `S01`) or by the **`day:index`** notation shown in `list-slots` (e.g. `1:3`).
 
 ```bash
-python main.py edit move-slot --program P.json --a P1_3 --direction down --presentation-duration 25
+# Swap a slot with its neighbour
+cpm edit move-slot --program P.json --a 1:3 --direction down
+cpm edit move-slot --program P.json --a S01 --direction up
+
+# Insert a lunch break at position 3 on day 1 (60 min, 15 min gap after)
+cpm edit add-slot --program P.json --day 1 --position 3 \
+    --kind lunch --duration 60 --label "Lunch"
+
+# Insert a coffee break
+cpm edit add-slot --program P.json --day 2 --position 2 \
+    --kind break --duration 30 --label "Coffee Break" --gap 10
+
+# Insert a new session slot (auto-creates one empty session)
+cpm edit add-slot --program P.json --day 1 --position 5 \
+    --kind session --duration 120 --session-id S_Extra
+
+# Insert a plenary
+cpm edit add-slot --program P.json --day 1 --position 0 \
+    --kind plenary --duration 60 --label "Keynote: Dr. Smith"
+
+# Shift a slot 30 minutes later (subsequent slots follow)
+cpm edit shift-slot --program P.json --a 1:4 --minutes 30
+
+# Shift a slot 15 minutes earlier
+cpm edit shift-slot --program P.json --a 1:4 --minutes -15
+
+# Extend a slot by 20 minutes
+cpm edit resize-slot --program P.json --a 1:4 --delta 20
+
+# Shrink a slot to exactly 90 minutes
+cpm edit resize-slot --program P.json --a 1:4 --duration 90
+
+# Resize and recalculate per-paper durations
+cpm edit resize-slot --program P.json --a 1:4 --delta -30 --adjust-papers
 ```
+
+**`move-slot` duration handling**: `move-slot` preserves each slot's intrinsic duration and the gaps between slots. The last slot in a day is normally extended to fill the day-end time; when that slot moves away from the last position its duration is computed as `max_papers × presentation_duration_min`. Use `--presentation-duration` to override the default of 20 minutes.
 
 ### Paper operations
 
@@ -137,20 +190,20 @@ python main.py edit move-slot --program P.json --a P1_3 --direction down --prese
 
 ```bash
 # Reorder within session
-python main.py edit move-paper  --program P.json --paper-id 700 --direction up
+cpm edit move-paper --program P.json --paper-id 700 --direction up
 
 # Move paper to a different session
-python main.py edit move-paper  --program P.json --paper-id 700 --to-session TueA05
+cpm edit move-paper --program P.json --paper-id 700 --to-session S05
 
 # Swap two papers (possibly across sessions)
-python main.py edit swap-papers --program P.json --paper-id 700 --paper-id-b 800
+cpm edit swap-papers --program P.json --paper-id 700 --paper-id-b 800
 
 # Add a paper to a session (loads full data from CSV)
-python main.py edit add-paper --program P.json --paper-id 999 --a TueA01 \
+cpm edit add-paper --program P.json --paper-id 999 --a S01 \
     --papers data/papers.csv --mapping config/column_mapping.json
 
 # Add a paper by ID and title only (no CSV needed)
-python main.py edit add-paper --program P.json --paper-id 999 --a TueA01 --title "My New Paper"
+cpm edit add-paper --program P.json --paper-id 999 --a S01 --title "My New Paper"
 ```
 
 If the paper already exists in the programme, `add-paper` moves it (removes from its current session first).
@@ -165,31 +218,41 @@ If the paper already exists in the programme, `add-paper` moves it (removes from
 
 ```bash
 # Swap chairs between two sessions
-python main.py edit swap-chairs --program P.json --a TueA01 --b TueA02
+cpm edit swap-chairs --program P.json --a S01 --b S02
 
 # Replace by name substring
-python main.py edit replace-chair --program P.json --a TueA01 --chair-name "Doe"
+cpm edit replace-chair --program P.json --a S01 --chair-name "Doe"
 
 # Interactive: pick from top 10 unassigned chairs
-python main.py edit replace-chair --program P.json --a TueA01 \
+cpm edit replace-chair --program P.json --a S01 \
     --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
 
 # Just view suggestions (no change)
-python main.py edit suggest-chairs --program P.json --a TueA01 \
+cpm edit suggest-chairs --program P.json --a S01 \
     --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
 ```
 
 When `--papers` and `--mapping` are provided, chair topic affinity is inferred from paper author data, giving much better ranking. Without them, only pre-existing `topic_ids` from the chairs CSV are used.
 
-### Common options
+### Common `edit` options
 
 | Option | Description |
 |---|---|
 | `--output FILE` | Write result to FILE instead of overwriting the input |
 | `--presentation-duration N` | Minutes per paper for `move-slot` duration calc (default 20) |
-| `--to-session ID` | Target session for `move-paper` (move paper to a different session) |
+| `--to-session ID` | Target session for `move-paper` |
 | `--title TEXT` | Paper title for `add-paper` when no CSV is provided |
-| `--papers CSV` | Paper CSV (for `add-paper` full data, or `suggest-chairs` topic inference) |
+| `--day N` | Day number for `add-slot` |
+| `--position N` | Slot index for `add-slot` (0-based) |
+| `--kind TYPE` | Slot kind: `session`, `lunch`, `break`, `plenary`, `dinner` |
+| `--duration N` | Duration in minutes for `add-slot` / `resize-slot` |
+| `--delta N` | Relative duration change for `resize-slot` (+/−) |
+| `--gap N` | Gap in minutes between slots (default 15) |
+| `--minutes N` | Shift amount for `shift-slot` (+/−) |
+| `--session-id ID` | Session ID for `add-slot` / `add-session` |
+| `--label TEXT` | Label for new slots/sessions |
+| `--adjust-papers` | Recalculate per-paper durations after `resize-slot` |
+| `--papers CSV` | Paper CSV (for `add-paper` or `suggest-chairs` topic inference) |
 | `--mapping JSON` | Column-mapping JSON (used with `--papers`) |
 
 ## Project Structure
@@ -197,6 +260,8 @@ When `--papers` and `--mapping` are provided, chair topic affinity is inferred f
 ```
 cpm/
 ├── cpm/                          # Python package
+│   ├── __init__.py               # Version string
+│   ├── cli.py                    # CLI entry point (cpm command)
 │   ├── models.py                 # Dataclasses (Paper, Topic, Room, Chair, Session, Program, …)
 │   ├── config.py                 # ScheduleConfig: load/save, constraint management
 │   ├── data_prep.py              # CSV loading with column mapping and pattern resolution
@@ -213,9 +278,10 @@ cpm/
 │   └── base/                     # Self-contained example (10 papers, 5 topics)
 │       ├── config/               # schedule_config, column_mapping, latex_config
 │       └── data/                 # example_papers.csv, example_topics.csv
-├── main.py                       # CLI entry point
-├── run_example.sh                # Run full pipeline for an example folder
+├── main.py                       # Backward-compat wrapper (delegates to cpm.cli)
+├── pyproject.toml                # Package metadata and dependencies
 ├── requirements.txt
+├── LICENSE
 └── README.md
 ```
 
@@ -270,15 +336,15 @@ Required when using `--format latex-folder`. Provides conference metadata for th
 
 | Field | Description |
 |---|---|
-| `conference_title` | Main title (e.g. "Benelux Meeting") |
-| `conference_subtitle` | Subtitle (e.g. "on Systems and Control") |
+| `conference_title` | Main title (e.g. "International Conference on …") |
+| `conference_subtitle` | Subtitle |
 | `edition` | Edition string (e.g. "42nd") |
 | `date_text` | Date range string (e.g. "March 21 -- 23, 2023") |
 | `venue` | Location string |
 | `document_title` | "Book of Abstracts" or "Programme" |
 | `editors` | Editor names |
-| `day_names` | Array of day names (e.g. ["Tuesday", "Wednesday", "Thursday"]) |
-| `day_dates` | Array of day dates (e.g. ["March 21, 2023", …]) |
+| `day_names` | Array of day names (e.g. `["Tuesday", "Wednesday", "Thursday"]`) |
+| `day_dates` | Array of day dates (e.g. `["March 21, 2023", …]`) |
 | `colors` | RGB color definitions for day/plenary/session headings |
 
 ### Constraints
@@ -340,7 +406,7 @@ afternoon_break_1 = 15:30     # Day 1 afternoon break at 15:30
 The `review` action interactively walks through papers (prioritising those with comments), displaying the paper ID, title, authors, preferences, and comment. For each paper you can type a constraint or press Enter / `s` to skip, `q` to quit:
 
 ```bash
-python main.py constraints --config config/schedule_config.json review \
+cpm constraints --config config/schedule_config.json review \
     --mapping config/column_mapping.json --papers data/papers.csv --topics data/topics.csv
 ```
 
@@ -403,7 +469,8 @@ When the extended format is used, the assignment logic enforces:
 |---|---|---|
 | Markdown | `--format md` | Single `.md` file |
 | LaTeX | `--format latex` | Single `.tex` file |
-| LaTeX folder | `--format latex-folder` | Full LaTeX project (main.tex, commands.tex, front.tex, program.tex, per-period day files, participants.tex) matching the Benelux boa style. Requires `--latex-config`. |
+| LaTeX folder | `--format latex-folder` | Full LaTeX project (main.tex, commands.tex, front.tex, program.tex, per-period day files, participants.tex). Requires `--latex-config`. |
+| Mobile HTML | `--format mobile` | Mobile-responsive HTML page with collapsible sessions, live session tracking, and favourites. |
 | CMS CSV | `--format cms-csv` | Two CSV files: `cms_sessions.csv` and `cms_presentations.csv` for import into conference management systems. |
 
 The LaTeX folder output:
@@ -420,3 +487,12 @@ Before paper assignment, the system checks whether total session capacity is suf
 
 - **Paper–Topic scores**: cosine similarity between paper titles and topic names, saved as JSON. Can replace or augment original preferences.
 - **Topic–Topic matrix**: identifies similar topics for automatic merging when a topic has few papers. Additionally, this matrix is used during paper assignment as a **fallback scoring mechanism**: when a paper's preferred topics are full, the solver uses topic-topic similarity to find the most related available session, producing a score in the 1–40 range (below direct preference match at 60–100, but well above the baseline of 1). This ensures papers are placed in topically relevant sessions even when their first or second choice is unavailable.
+
+## Publishing
+
+```bash
+# Bump version in cpm/__init__.py, then:
+pip install build twine
+python -m build
+twine upload dist/*
+```
