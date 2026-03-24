@@ -292,6 +292,7 @@ def cmd_chairs(args):
 def cmd_edit(args):
     """Manual post-output programme edits."""
     from cpm.edit_program import (
+        add_chair,
         add_paper,
         add_session,
         add_slot,
@@ -301,6 +302,8 @@ def cmd_edit(args):
         move_paper,
         move_session,
         move_slot,
+        remove_paper,
+        rename_room,
         replace_chair,
         resize_slot,
         shift_slot,
@@ -374,6 +377,12 @@ def cmd_edit(args):
             sys.exit(1)
         swap_papers(prog, args.paper_id, args.paper_id_b)
 
+    elif action == "remove-paper":
+        if not args.paper_id:
+            print("Error: --paper-id is required for remove-paper")
+            sys.exit(1)
+        remove_paper(prog, args.paper_id)
+
     elif action == "add-paper":
         if not args.paper_id or not args.a:
             print("Error: --paper-id and --a (session ID) are required for add-paper")
@@ -399,14 +408,22 @@ def cmd_edit(args):
         pos = getattr(args, "position", None)
         kind = getattr(args, "kind", None)
         dur = getattr(args, "duration", None)
-        if day_num is None or pos is None or kind is None or dur is None:
-            print("Error: --day, --position, --kind, --duration are required for add-slot")
+        start_time = getattr(args, "time", None)
+        if day_num is None or kind is None or dur is None:
+            print("Error: --day, --kind, --duration are required for add-slot")
             sys.exit(1)
+        if pos is None and start_time is None:
+            print("Error: --position or --time is required for add-slot")
+            sys.exit(1)
+        if pos is None:
+            pos = -1  # append; start_time determines actual placement
         slot_label = getattr(args, "label", "") or ""
         slot_gap = getattr(args, "gap", 15) or 15
         sid = getattr(args, "session_id", None)
+        no_adj = getattr(args, "no_adjust", False)
         add_slot(prog, day_num, pos, kind, dur, label=slot_label,
-                 gap=slot_gap, session_id=sid)
+                 gap=slot_gap, session_id=sid, start_time=start_time,
+                 adjust_following=not no_adj)
 
     elif action == "add-session":
         if not args.a:
@@ -457,11 +474,86 @@ def cmd_edit(args):
             sys.exit(1)
         swap_chairs(prog, args.a, args.b)
 
+    elif action == "add-chair":
+        if not args.a:
+            print("Error: --a (session) is required for add-chair")
+            sys.exit(1)
+        if getattr(args, "chair_id", None) is not None:
+            from cpm.edit_program import _find_chair_by_id
+            new_ch = _find_chair_by_id(prog, args.chair_id)
+            if new_ch is None and args.chairs:
+                from cpm.data_prep import load_chairs
+                for ch in load_chairs(args.chairs):
+                    if ch.chair_id == args.chair_id:
+                        new_ch = ch
+                        break
+            if new_ch is None:
+                from cpm.models import Chair
+                new_ch = Chair(chair_id=args.chair_id, name=f"Chair {args.chair_id}")
+                print(f"Warning: chair_id {args.chair_id} not found, creating placeholder")
+            add_chair(prog, args.a, new_ch)
+        elif args.chair_name:
+            from cpm.edit_program import _all_chairs
+            all_ch = _all_chairs(prog)
+            match = [ch for ch in all_ch.values()
+                     if args.chair_name.lower() in ch.name.lower()]
+            if not match:
+                from cpm.models import Chair
+                match = [Chair(chair_id=-1, name=args.chair_name)]
+            add_chair(prog, args.a, match[0])
+        elif args.chairs:
+            from cpm.data_prep import load_chairs, load_papers
+            all_chairs_list = load_chairs(args.chairs)
+            papers = None
+            if getattr(args, "papers", None) and getattr(args, "mapping", None):
+                papers = load_papers(args.papers, _load_mapping(args.mapping))
+            suggestions = suggest_chairs(prog, args.a, all_chairs_list,
+                                         papers=papers, top_n=10)
+            if not suggestions:
+                print("No eligible unassigned chairs found.")
+                return
+            print(f"Top unassigned chairs for session {args.a}:")
+            for i, (ch, score) in enumerate(suggestions, 1):
+                topics = ", ".join(str(t) for t in ch.topic_ids[:5])
+                print(f"  {i:2}. {ch.name} (id={ch.chair_id}, score={score:.0f}, topics=[{topics}])")
+            pick = input("Pick number to assign (or Enter to cancel): ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(suggestions):
+                add_chair(prog, args.a, suggestions[int(pick) - 1][0])
+            else:
+                print("Cancelled.")
+                return
+        else:
+            print("Error: provide --chair-name, --chair-id, or --chairs CSV for add-chair")
+            sys.exit(1)
+
+    elif action == "rename-room":
+        room_id = getattr(args, "room_id", None)
+        new_name = getattr(args, "new_name", None)
+        if room_id is None or not new_name:
+            print("Error: --room-id and --new-name are required for rename-room")
+            sys.exit(1)
+        rename_room(prog, room_id, new_name)
+
     elif action == "replace-chair":
         if not args.a:
             print("Error: --a (session) is required for replace-chair")
             sys.exit(1)
-        if args.chair_name:
+        if getattr(args, "chair_id", None) is not None:
+            # Find chair by ID — search programme first, then external CSV
+            from cpm.edit_program import _find_chair_by_id
+            new_ch = _find_chair_by_id(prog, args.chair_id)
+            if new_ch is None and args.chairs:
+                from cpm.data_prep import load_chairs
+                for ch in load_chairs(args.chairs):
+                    if ch.chair_id == args.chair_id:
+                        new_ch = ch
+                        break
+            if new_ch is None:
+                from cpm.models import Chair
+                new_ch = Chair(chair_id=args.chair_id, name=f"Chair {args.chair_id}")
+                print(f"Warning: chair_id {args.chair_id} not found, creating placeholder")
+            replace_chair(prog, args.a, new_ch)
+        elif args.chair_name:
             # Find chair by name in the programme
             from cpm.edit_program import _all_chairs
             all_ch = _all_chairs(prog)
@@ -813,9 +905,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action",
                     choices=["list", "list-slots", "swap", "move", "move-slot",
                              "merge", "swap-chairs", "replace-chair",
-                             "suggest-chairs", "move-paper", "swap-papers",
-                             "add-paper", "add-slot", "add-session",
-                             "shift-slot", "resize-slot"],
+                             "add-chair", "suggest-chairs",
+                             "move-paper", "swap-papers",
+                             "add-paper", "remove-paper", "add-slot",
+                             "add-session", "shift-slot", "resize-slot",
+                             "rename-room"],
                     help="Edit action to perform")
     sp.add_argument("--program", required=True, help="Programme JSON to edit")
     sp.add_argument("--a", help="First session/slot ID (or day:index for slots)")
@@ -829,6 +923,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--to-session", help="Target session ID (for move-paper)")
     sp.add_argument("--title", help="Paper title (for add-paper without CSV)")
     sp.add_argument("--chair-name", help="Chair name for replace-chair (substring match)")
+    sp.add_argument("--chair-id", type=int, help="Chair ID for replace-chair")
+    sp.add_argument("--room-id", type=int, help="Room ID (for rename-room)")
+    sp.add_argument("--new-name", help="New name (for rename-room)")
     sp.add_argument("--chairs", help="Chairs CSV (for suggest-chairs / replace-chair)")
     sp.add_argument("--mapping", help="Column-mapping JSON (for topic inference)")
     sp.add_argument("--papers", help="Paper CSV (for topic inference)")
@@ -838,6 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Slot kind (for add-slot)")
     sp.add_argument("--duration", type=int, help="Duration in minutes (for add-slot/resize-slot)")
     sp.add_argument("--label", help="Label for new slot/session")
+    sp.add_argument("--time", help="Start time HH:MM (for add-slot)")
     sp.add_argument("--gap", type=int, default=15,
                     help="Gap in minutes between slots (default 15)")
     sp.add_argument("--session-id", help="Session ID (for add-slot/add-session)")
@@ -846,7 +944,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--adjust-papers", action="store_true",
                     help="Recalculate presentation durations (for resize-slot)")
     sp.add_argument("--no-adjust", action="store_true",
-                    help="Do not adjust following slots (for shift-slot)")
+                    help="Do not adjust following slots (for shift-slot/add-slot)")
     sp.add_argument("--output", default=None,
                     help="Output JSON (default: overwrite input)")
     sp.set_defaults(func=cmd_edit)

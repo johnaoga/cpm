@@ -434,6 +434,28 @@ def replace_chair(
 # Suggest unassigned chairs (by topic closeness)
 # ---------------------------------------------------------------------------
 
+def add_chair(
+    program: Program,
+    session_id: str,
+    new_chair: Chair,
+) -> Program:
+    """Assign *new_chair* to *session_id*.
+
+    Unlike ``replace_chair`` this is intended for sessions that do not
+    yet have a chair, but it works in both cases.
+    """
+    res = _find_session(program, session_id)
+    if res is None:
+        raise ValueError(f"Session {session_id!r} not found")
+    sess = res[0]
+    old_name = sess.chair.name if sess.chair else "(none)"
+    sess.chair = new_chair
+    logger.info(
+        "Assigned chair to %s: %s → %s", session_id, old_name, new_chair.name,
+    )
+    return program
+
+
 def suggest_chairs(
     program: Program,
     session_id: str,
@@ -593,6 +615,8 @@ def add_slot(
     label: str = "",
     gap: int = 15,
     session_id: str | None = None,
+    start_time: str | None = None,
+    adjust_following: bool = True,
 ) -> Program:
     """Insert a new slot into *day* at *position* (0-based index).
 
@@ -612,6 +636,13 @@ def add_slot(
         Gap in minutes before the next slot (default 15).
     session_id : str or None
         Session ID for a new session slot.  Auto-generated if not given.
+    start_time : str or None
+        Explicit start time in ``"HH:MM"`` format.  When given, the slot
+        is placed at this time regardless of the position-based calculation.
+    adjust_following : bool
+        If True (default), subsequent slots are reflowed to maintain gaps.
+        When False, only the new slot is inserted and subsequent slots
+        keep their existing times.
     """
     slot_kind = _SLOT_KIND_MAP.get(kind)
     if slot_kind is None:
@@ -631,7 +662,9 @@ def add_slot(
         position = n  # append
 
     # Determine start time
-    if position == 0:
+    if start_time is not None:
+        start_min = _parse_hhmm(start_time)
+    elif position == 0:
         start_min = _parse_hhmm(dp.slots[0]["time_slot"].start) if n > 0 else 9 * 60
     elif position <= n - 1:
         prev_end = _parse_hhmm(dp.slots[position - 1]["time_slot"].end)
@@ -664,10 +697,11 @@ def add_slot(
 
     dp.slots.insert(position, new_slot)
 
-    # Shift subsequent slots down
-    day_end = _parse_hhmm(dp.slots[-1]["time_slot"].end) if len(dp.slots) > 1 else None
-    if position < len(dp.slots) - 1:
-        _reflow_day_from(dp, position + 1, gap, day_end=day_end)
+    # Shift subsequent slots down (unless disabled)
+    if adjust_following:
+        day_end = _parse_hhmm(dp.slots[-1]["time_slot"].end) if len(dp.slots) > 1 else None
+        if position < len(dp.slots) - 1:
+            _reflow_day_from(dp, position + 1, gap, day_end=day_end)
 
     _recalc_timeslots(program)
     logger.info("Added %s slot '%s' at day %d position %d (%s–%s)",
@@ -953,3 +987,51 @@ def swap_papers(program: Program, paper_a: int, paper_b: int) -> Program:
         paper_a, sess_a.session_id, paper_b, sess_b.session_id,
     )
     return program
+
+
+def remove_paper(program: Program, paper_id: int) -> Program:
+    """Remove paper *paper_id* from whatever session it belongs to."""
+    res = _find_paper(program, paper_id)
+    if res is None:
+        raise ValueError(f"Paper {paper_id} not found in any session")
+    sess, pi, _slot, _day = res
+    paper = sess.papers.pop(pi)
+    logger.info(
+        "Removed paper %d (%s) from session %s",
+        paper_id, paper.title[:40], sess.session_id,
+    )
+    return program
+
+
+# ---------------------------------------------------------------------------
+# Room operations
+# ---------------------------------------------------------------------------
+
+def rename_room(program: Program, room_id: int, new_name: str) -> Program:
+    """Rename every occurrence of room *room_id* to *new_name*."""
+    found = False
+    for dp in program.days:
+        for slot in dp.slots:
+            for sess in slot.get("sessions", []):
+                if sess.room and sess.room.room_id == room_id:
+                    old_name = sess.room.name
+                    sess.room.name = new_name
+                    found = True
+    if not found:
+        raise ValueError(f"Room with id {room_id} not found in programme")
+    logger.info("Renamed room %d: %s → %s", room_id, old_name, new_name)
+    return program
+
+
+# ---------------------------------------------------------------------------
+# Chair lookup by ID
+# ---------------------------------------------------------------------------
+
+def _find_chair_by_id(
+    program: Program, chair_id: int,
+) -> Optional[Chair]:
+    """Return a Chair object from the programme matching *chair_id*."""
+    for sess, _ts, _day in _all_sessions(program):
+        if sess.chair and sess.chair.chair_id == chair_id:
+            return sess.chair
+    return None

@@ -61,6 +61,7 @@ def _build_presentations(
     program: Program,
     day_names: list[str],
     day_dates: list[str],
+    extra: dict | None = None,
 ) -> list[dict]:
     """Convert the programme into the flat presentation list expected by
     the mobile JS code."""
@@ -190,7 +191,13 @@ def _build_presentations(
                     })
                     continue
 
-                pres_dur = ts.duration_minutes // max(len(sess.papers), 1)
+                _extra = extra or {}
+                exact_pres = _extra.get("exact_presentation_timing", False)
+                cfg_pres_dur = _extra.get("presentation_duration_min", 20)
+                if exact_pres:
+                    pres_dur = cfg_pres_dur
+                else:
+                    pres_dur = ts.duration_minutes // max(len(sess.papers), 1)
                 # Parse start time for per-paper timing
                 h_start, m_start = (int(x) for x in ts.start.replace(".", ":").split(":"))
                 paper_cursor = h_start * 60 + m_start
@@ -606,6 +613,7 @@ def generate_mobile_html(
     arguments override values from the config file.
     """
     # Load metadata from latex config if available
+    extra: dict = {}
     if latex_config and Path(latex_config).exists():
         raw = json.loads(Path(latex_config).read_text())
         conference_title = conference_title if conference_title != "Conference" else raw.get("conference_title", conference_title)
@@ -617,6 +625,7 @@ def generate_mobile_html(
             day_names = raw.get("day_names", [])
         if day_dates is None:
             day_dates = raw.get("day_dates", [])
+        extra = raw.get("extra", {})
 
     if day_names is None:
         day_names = []
@@ -628,7 +637,7 @@ def generate_mobile_html(
         weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         day_names = [weekdays[(d - 1) % 7] for d in range(1, len(program.days) + 1)]
 
-    presentations = _build_presentations(program, day_names, day_dates)
+    presentations = _build_presentations(program, day_names, day_dates, extra=extra)
     pres_json = json.dumps(presentations, ensure_ascii=False)
 
     page = _html_template(

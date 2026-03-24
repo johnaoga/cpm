@@ -135,7 +135,7 @@ cpm edit add-session --program P.json --a 1:4 --session-id S15 --label "Late Pos
 | Action | Required args | Description |
 |---|---|---|
 | `move-slot` | `--a`, `--direction` | Swap an entire slot with its neighbour (preserves durations and gaps) |
-| `add-slot` | `--day`, `--position`, `--kind`, `--duration` | Insert a new slot; subsequent slots shift down |
+| `add-slot` | `--day`, `--kind`, `--duration`, `--position` or `--time` | Insert a new slot by position or start time; subsequent slots shift down |
 | `shift-slot` | `--a`, `--minutes` | Shift a slot earlier/later by N minutes; subsequent slots adjust |
 | `resize-slot` | `--a`, `--duration` or `--delta` | Change a slot's duration; subsequent slots adjust |
 
@@ -162,11 +162,22 @@ cpm edit add-slot --program P.json --day 1 --position 5 \
 cpm edit add-slot --program P.json --day 1 --position 0 \
     --kind plenary --duration 60 --label "Keynote: Dr. Smith"
 
+# Insert a slot at a specific time (position auto-determined)
+cpm edit add-slot --program P.json --day 1 --time 16:50 \
+    --kind break --duration 15 --label "Coffee Break"
+
+# Insert a slot at a specific time without adjusting subsequent slots
+cpm edit add-slot --program P.json --day 1 --time 16:50 \
+    --kind break --duration 15 --label "Coffee" --no-adjust
+
 # Shift a slot 30 minutes later (subsequent slots follow)
 cpm edit shift-slot --program P.json --a 1:4 --minutes 30
 
 # Shift a slot 15 minutes earlier
 cpm edit shift-slot --program P.json --a 1:4 --minutes -15
+
+# Shift a slot without adjusting subsequent slots
+cpm edit shift-slot --program P.json --a 1:4 --minutes 30 --no-adjust
 
 # Extend a slot by 20 minutes
 cpm edit resize-slot --program P.json --a 1:4 --delta 20
@@ -187,6 +198,7 @@ cpm edit resize-slot --program P.json --a 1:4 --delta -30 --adjust-papers
 | `move-paper` | `--paper-id`, `--direction` or `--to-session` | Reorder within session (up/down) or move to another session |
 | `swap-papers` | `--paper-id`, `--paper-id-b` | Swap two papers (even across different sessions) |
 | `add-paper` | `--paper-id`, `--a` | Add a paper to a session (from CSV or by ID + title) |
+| `remove-paper` | `--paper-id` | Remove a paper from its session |
 
 ```bash
 # Reorder within session
@@ -204,6 +216,9 @@ cpm edit add-paper --program P.json --paper-id 999 --a S01 \
 
 # Add a paper by ID and title only (no CSV needed)
 cpm edit add-paper --program P.json --paper-id 999 --a S01 --title "My New Paper"
+
+# Remove a paper from the programme
+cpm edit remove-paper --program P.json --paper-id 700
 ```
 
 If the paper already exists in the programme, `add-paper` moves it (removes from its current session first).
@@ -213,15 +228,30 @@ If the paper already exists in the programme, `add-paper` moves it (removes from
 | Action | Required args | Description |
 |---|---|---|
 | `swap-chairs` | `--a`, `--b` | Swap chair assignments between two sessions |
-| `replace-chair` | `--a`, `--chair-name` or `--chairs` | Replace a session's chair by name or from suggestions |
+| `add-chair` | `--a`, `--chair-name` or `--chair-id` or `--chairs` | Assign a chair to a session (by name, ID, or interactive pick) |
+| `replace-chair` | `--a`, `--chair-name` or `--chair-id` or `--chairs` | Replace a session's chair by name, by ID, or from suggestions |
 | `suggest-chairs` | `--a`, `--chairs` | Show top 10 unassigned chairs ranked by topic affinity |
 
 ```bash
 # Swap chairs between two sessions
 cpm edit swap-chairs --program P.json --a S01 --b S02
 
+# Assign a chair by name
+cpm edit add-chair --program P.json --a S01 --chair-name "Jane Doe"
+
+# Assign a chair by ID
+cpm edit add-chair --program P.json --a S01 --chair-id 42
+
+# Assign a chair interactively from top suggestions
+cpm edit add-chair --program P.json --a S01 \
+    --chairs data/chairs.csv --papers data/papers.csv --mapping config/column_mapping.json
+
 # Replace by name substring
 cpm edit replace-chair --program P.json --a S01 --chair-name "Doe"
+
+# Replace by chair ID (looks up in programme, then in --chairs CSV)
+cpm edit replace-chair --program P.json --a S01 --chair-id 42
+cpm edit replace-chair --program P.json --a S01 --chair-id 42 --chairs data/chairs.csv
 
 # Interactive: pick from top 10 unassigned chairs
 cpm edit replace-chair --program P.json --a S01 \
@@ -233,6 +263,16 @@ cpm edit suggest-chairs --program P.json --a S01 \
 ```
 
 When `--papers` and `--mapping` are provided, chair topic affinity is inferred from paper author data, giving much better ranking. Without them, only pre-existing `topic_ids` from the chairs CSV are used.
+
+### Room operations
+
+| Action | Required args | Description |
+|---|---|---|
+| `rename-room` | `--room-id`, `--new-name` | Rename a room across the entire programme |
+
+```bash
+cpm edit rename-room --program P.json --room-id 7 --new-name "Grand Hall"
+```
 
 ### Common `edit` options
 
@@ -252,6 +292,11 @@ When `--papers` and `--mapping` are provided, chair topic affinity is inferred f
 | `--session-id ID` | Session ID for `add-slot` / `add-session` |
 | `--label TEXT` | Label for new slots/sessions |
 | `--adjust-papers` | Recalculate per-paper durations after `resize-slot` |
+| `--no-adjust` | Do not adjust subsequent slots after `shift-slot` / `add-slot` |
+| `--time HH:MM` | Start time for `add-slot` (alternative to `--position`) |
+| `--chair-id N` | Chair ID for `replace-chair` |
+| `--room-id N` | Room ID for `rename-room` |
+| `--new-name TEXT` | New name for `rename-room` |
 | `--papers CSV` | Paper CSV (for `add-paper` or `suggest-chairs` topic inference) |
 | `--mapping JSON` | Column-mapping JSON (used with `--papers`) |
 

@@ -760,10 +760,10 @@ def _gen_comments(program: Program, lcfg: LaTeXConfig) -> str:
                 room_name = ""
                 if sessions and hasattr(sessions[0], "room") and sessions[0].room:
                     room_name = sessions[0].room.name
-                room_str = f" -- {_esc(room_name)}" if room_name else ""
+                room_str = f"{_esc(room_name)} Room" if room_name else ""
                 mc = n_cols
                 # First row: label + room
-                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{{_esc(label)}{room_str}}} & \\\\")
+                lines.append(f"    & \\multicolumn{{{mc}}}{{c}}{{{room_str}}} & \\\\")
                 # Second row: speaker (if available)
                 if ts.speaker:
                     lines.append(f"{time_str} & \\multicolumn{{{mc}}}{{c}}{{{_esc(ts.speaker)} -- \\emph{{{_esc(label)}}}}} & \\\\ \\hline")
