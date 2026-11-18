@@ -2,8 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] — Unreleased
+## [0.2.0] — 2026-11-18
+### Changed
+- Adding auto publishing to GitHub Releases
 
+## [0.1.1] — 2026-03-09
 ### Added
 
 #### Manual editing (`cpm edit`)
@@ -30,6 +33,6 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - `generate_latex_folder()` accepts an optional `presentation_duration_min` parameter so `ScheduleConfig.presentation_duration_min` is forwarded automatically during `cpm generate`.
 
-## [0.1.1] — 2026-02-26
+## [0.1.0] — 2026-02-26
 
 Initial public release with full pipeline: `dummy`, `constraints`, `papers`, `rooms`, `chairs`, `output`, `similarity`, `generate`, and `edit` commands.

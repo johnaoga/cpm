@@ -1,0 +1,113 @@
+name: Publish to PyPI
+
+# Triggered by pushing a version tag, e.g. `git tag v0.2.0 && git push --tags`.
+# Uses PyPI Trusted Publishing (OIDC) - no API tokens are stored in the repo.
+#
+# One-time setup:
+#   1. On https://pypi.org/manage/account/publishing/ (and test.pypi.org) add a
+#      "pending publisher" for project `conf-program-manager`, owner `johnaoga`,
+#      repo `cpm`, workflow `publish.yml`, environment `pypi` (resp. `testpypi`).
+#   2. In the GitHub repo: Settings > Environments, create `testpypi` and `pypi`
+#      (optionally add required reviewers on `pypi`).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check that the tag matches the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(python -c "import cpm; print(cpm.__version__)")
+          echo "tag=$TAG_VERSION package=$PKG_VERSION"
+          test "$TAG_VERSION" = "$PKG_VERSION"
+
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test:
+    name: Run tests
+    needs: build
+    uses: ./.github/workflows/test.yml
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/conf-program-manager
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/conf-program-manager
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Extract changelog section for this version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then echo "See CHANGELOG.md" > release_notes.md; fi
+          cat release_notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: release_notes.md
+          generate_release_notes: true
